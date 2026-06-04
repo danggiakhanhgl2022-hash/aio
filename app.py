@@ -1,21 +1,31 @@
 import streamlit as st
-import tempfile
+import pandas as pd
 
-from src.pdf_loader import read_pdf
+from src.multimodal_loader import extract_text_from_file
 from src.chunking import chunk_text
 from src.vector_db import create_vector_db, retrieve_chunks
 from src.rag_pipeline import generate_answer
+from src.evaluator import run_evaluation
+from src.direct_answer import direct_answer_from_text
+from src.config import (
+    LLM_MODEL,
+    EMBED_MODEL,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    N_RESULTS,
+    TEMPERATURE
+)
 
 
 st.set_page_config(
-    page_title="RAG PDF Assistant",
+    page_title="Multi-Modal RAG Research Assistant",
     page_icon="📄",
     layout="wide"
 )
 
 
 # =========================
-# CSS STYLE
+# CSS
 # =========================
 st.markdown(
     """
@@ -94,8 +104,8 @@ st.markdown(
 
     .hero-title {
         font-family: Georgia, serif;
-        font-size: 54px;
-        line-height: 1.12;
+        font-size: 48px;
+        line-height: 1.14;
         font-weight: 900;
         color: #142033;
         letter-spacing: -1px;
@@ -115,30 +125,6 @@ st.markdown(
         margin-bottom: 30px;
     }
 
-    .hero-actions {
-        display: flex;
-        gap: 16px;
-        margin-top: 22px;
-    }
-
-    .btn-main {
-        background: #c85f4b;
-        color: white;
-        padding: 16px 26px;
-        border-radius: 8px;
-        font-weight: 800;
-        box-shadow: 0 14px 28px rgba(200, 95, 75, 0.22);
-    }
-
-    .btn-dark {
-        background: #142033;
-        color: white;
-        padding: 16px 26px;
-        border-radius: 8px;
-        font-weight: 800;
-        box-shadow: 0 14px 28px rgba(20, 32, 51, 0.18);
-    }
-
     .preview-card {
         background: white;
         border-radius: 18px;
@@ -151,7 +137,7 @@ st.markdown(
         background: linear-gradient(135deg, #142033, #243247);
         border-radius: 16px;
         padding: 30px;
-        min-height: 360px;
+        min-height: 350px;
         color: white;
     }
 
@@ -161,12 +147,12 @@ st.markdown(
         letter-spacing: 1.5px;
         text-transform: uppercase;
         font-weight: 800;
-        margin-bottom: 32px;
+        margin-bottom: 30px;
     }
 
     .preview-title {
         font-family: Georgia, serif;
-        font-size: 34px;
+        font-size: 32px;
         line-height: 1.25;
         font-weight: 900;
         color: white;
@@ -190,45 +176,18 @@ st.markdown(
         font-size: 15px;
     }
 
-    .stats-row {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 28px;
-        margin-top: 58px;
-        margin-bottom: 56px;
-    }
-
-    .stat-card {
-        border-left: 1px solid #ddcfc0;
-        padding-left: 26px;
-    }
-
-    .stat-number {
-        font-family: Georgia, serif;
-        font-size: 42px;
-        font-weight: 900;
-        color: #142033;
-        margin-bottom: 8px;
-    }
-
-    .stat-label {
-        font-size: 16px;
-        color: #64748b;
-        font-weight: 650;
-    }
-
     .section-card {
         background: white;
         border: 1px solid #eadfd3;
         border-radius: 18px;
-        padding: 32px;
+        padding: 30px;
         box-shadow: 0 18px 42px rgba(20, 32, 51, 0.08);
-        margin-bottom: 30px;
+        margin-bottom: 28px;
     }
 
     .section-title {
         font-family: Georgia, serif;
-        font-size: 34px;
+        font-size: 32px;
         font-weight: 900;
         color: #142033;
         margin-bottom: 12px;
@@ -240,39 +199,21 @@ st.markdown(
         color: #475569;
     }
 
-    .pipeline-grid {
+    .type-grid {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 16px;
-        margin-top: 24px;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 14px;
+        margin-top: 20px;
     }
 
-    .pipeline-item {
+    .type-box {
         background: #faf7f2;
         border: 1px solid #eadfd3;
         border-radius: 14px;
-        padding: 20px;
-    }
-
-    .pipeline-num {
-        font-family: Georgia, serif;
-        font-size: 28px;
-        font-weight: 900;
-        color: #bd5c49;
-        margin-bottom: 8px;
-    }
-
-    .pipeline-title {
-        font-size: 17px;
-        font-weight: 850;
+        padding: 18px;
+        text-align: center;
+        font-weight: 800;
         color: #142033;
-        margin-bottom: 8px;
-    }
-
-    .pipeline-desc {
-        font-size: 15px;
-        color: #64748b;
-        line-height: 1.6;
     }
 
     .sidebar-box {
@@ -340,16 +281,9 @@ st.markdown(
         color: #142033 !important;
     }
 
-    .footer {
-        text-align: center;
-        font-size: 14px;
-        color: #64748b;
-        margin-top: 40px;
-    }
-
     @media (max-width: 900px) {
         .hero-title {
-            font-size: 40px;
+            font-size: 38px;
         }
 
         .top-nav {
@@ -362,11 +296,7 @@ st.markdown(
             gap: 14px;
         }
 
-        .stats-row {
-            grid-template-columns: 1fr;
-        }
-
-        .pipeline-grid {
+        .type-grid {
             grid-template-columns: 1fr;
         }
     }
@@ -379,30 +309,26 @@ st.markdown(
 # =========================
 # SESSION STATE
 # =========================
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+defaults = {
+    "messages": [],
+    "collection": None,
+    "file_name": "",
+    "file_type": "",
+    "extracted_text": "",
+    "chunk_count": 0,
+    "logged_in": False,
+    "user_name": "",
+    "user_email": "",
+    "user_phone": "",
+}
 
-if "collection" not in st.session_state:
-    st.session_state.collection = None
-
-if "pdf_name" not in st.session_state:
-    st.session_state.pdf_name = None
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "user_name" not in st.session_state:
-    st.session_state.user_name = ""
-
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
-
-if "user_phone" not in st.session_state:
-    st.session_state.user_phone = ""
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 # =========================
-# SIDEBAR LOGIN
+# SIDEBAR
 # =========================
 with st.sidebar:
     st.markdown(
@@ -410,7 +336,7 @@ with st.sidebar:
         <div class="sidebar-box">
             <div class="sidebar-title">Tài khoản người dùng</div>
             <div class="sidebar-text">
-                Nhập thông tin để lưu phiên làm việc và cá nhân hóa trải nghiệm sử dụng.
+                Nhập thông tin để lưu phiên làm việc hiện tại.
             </div>
         </div>
         """,
@@ -425,14 +351,13 @@ with st.sidebar:
             submitted = st.form_submit_button("Đăng nhập")
 
             if submitted:
-                if name.strip() == "":
+                if not name.strip():
                     st.warning("Vui lòng nhập họ và tên.")
                 else:
                     st.session_state.logged_in = True
                     st.session_state.user_name = name
                     st.session_state.user_email = email
                     st.session_state.user_phone = phone
-                    st.success("Đăng nhập thành công.")
                     st.rerun()
     else:
         st.markdown(
@@ -455,16 +380,13 @@ with st.sidebar:
             st.session_state.user_phone = ""
             st.rerun()
 
-    st.markdown("### Cấu hình trả lời")
-
-    n_results = st.slider(
-        "Số đoạn tài liệu dùng để trả lời",
-        min_value=1,
-        max_value=6,
-        value=3
-    )
-
-    st.caption("Mặc định 3 đoạn là phù hợp để câu trả lời có đủ ngữ cảnh.")
+    st.markdown("### Cấu hình hiện tại")
+    st.write(f"LLM: `{LLM_MODEL}`")
+    st.write(f"Embedding: `{EMBED_MODEL}`")
+    st.write(f"Chunk size: `{CHUNK_SIZE}`")
+    st.write(f"Overlap: `{CHUNK_OVERLAP}`")
+    st.write(f"n_results: `{N_RESULTS}`")
+    st.write(f"Temperature: `{TEMPERATURE}`")
 
     if st.button("Xóa lịch sử trò chuyện"):
         st.session_state.messages = []
@@ -473,9 +395,9 @@ with st.sidebar:
     st.markdown(
         """
         <div class="sidebar-box">
-            <div class="sidebar-title">Quy trình</div>
+            <div class="sidebar-title">Pipeline</div>
             <div class="sidebar-text">
-                PDF → Chunking → Embedding → ChromaDB → Retrieval → LLM Answer
+                File → Extract Text → Chunking → Embedding → ChromaDB → Retrieval → LLM Answer
             </div>
         </div>
         """,
@@ -490,15 +412,15 @@ st.markdown(
     """
     <div class="top-nav">
         <div>
-            <div class="brand-title">RAG Assistant</div>
-            <div class="brand-subtitle">PDF Question Answering System</div>
+            <div class="brand-title">Multi-Modal RAG Research Assistant</div>
+            <div class="brand-subtitle">PDF · Image · Audio · Video · RAG Evaluation</div>
         </div>
         <div class="nav-menu">
             <div>Upload</div>
-            <div>Pipeline</div>
             <div>Chatbot</div>
+            <div>Evaluation</div>
             <div>Report</div>
-            <div class="nav-button">Bắt đầu</div>
+            <div class="nav-button">Research Mode</div>
         </div>
     </div>
     """,
@@ -507,24 +429,21 @@ st.markdown(
 
 
 # =========================
-# HERO SECTION
+# HERO
 # =========================
 left, right = st.columns([1.05, 0.95], gap="large")
 
 with left:
     st.markdown(
         """
-        <div class="hero-label">Ứng dụng RAG cho tài liệu PDF</div>
+        <div class="hero-label">Ứng dụng RAG đa phương thức</div>
         <div class="hero-title">
-            Hỏi đáp tài liệu rõ ràng hơn <span>trước khi ra quyết định</span>
+            Hỏi đáp dữ liệu và <span>đánh giá cấu hình RAG</span>
         </div>
         <div class="hero-desc">
-            Tải lên tài liệu PDF, đặt câu hỏi và nhận câu trả lời dựa trên nội dung thật trong tài liệu.
-            Hệ thống sử dụng RAG Pipeline để tìm đoạn liên quan trước khi tạo câu trả lời.
-        </div>
-        <div class="hero-actions">
-            <div class="btn-main">Tải PDF lên →</div>
-            <div class="btn-dark">Xem quy trình</div>
+            Ứng dụng cho phép tải lên PDF, văn bản, hình ảnh, âm thanh hoặc video.
+            Sau đó hệ thống trích xuất nội dung, chia chunk, tạo embedding, truy xuất context 
+            và dùng LLM để trả lời. Chế độ nghiên cứu giúp kiểm thử câu hỏi và lưu kết quả đánh giá.
         </div>
         """,
         unsafe_allow_html=True
@@ -535,14 +454,14 @@ with right:
         """
         <div class="preview-card">
             <div class="preview-inner">
-                <div class="preview-small">Document Intelligence</div>
-                <div class="preview-title">Trợ lý đọc hiểu PDF bằng AI</div>
+                <div class="preview-small">RAG Research System</div>
+                <div class="preview-title">Một chatbot cho nhiều loại dữ liệu</div>
                 <div class="preview-text">
-                    Phù hợp cho tài liệu học tập, báo cáo, hợp đồng, giáo trình, quy trình nội bộ và tài liệu nghiên cứu.
+                    Phù hợp để demo project và phát triển thành báo cáo nghiên cứu về hiệu quả các cấu hình RAG.
                 </div>
-                <div class="preview-step">1. Đọc nội dung PDF</div>
-                <div class="preview-step">2. Tìm đoạn liên quan</div>
-                <div class="preview-step">3. Trả lời dựa trên tài liệu</div>
+                <div class="preview-step">1. Upload nhiều loại file</div>
+                <div class="preview-step">2. Hỏi đáp bằng RAG Pipeline</div>
+                <div class="preview-step">3. Chạy bộ câu hỏi đánh giá</div>
             </div>
         </div>
         """,
@@ -551,63 +470,22 @@ with right:
 
 
 # =========================
-# STATS
-# =========================
-st.markdown(
-    """
-    <div class="stats-row">
-        <div class="stat-card">
-            <div class="stat-number">01</div>
-            <div class="stat-label">Tài liệu PDF được xử lý</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-number">03</div>
-            <div class="stat-label">Đoạn context mặc định</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-number">06</div>
-            <div class="stat-label">Bước trong RAG pipeline</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# =========================
-# PIPELINE
+# SUPPORTED TYPES
 # =========================
 st.markdown(
     """
     <div class="section-card">
-        <div class="section-title">Quy trình xử lý tài liệu</div>
+        <div class="section-title">Loại dữ liệu được hỗ trợ</div>
         <div class="section-text">
-            Hệ thống không trả lời trực tiếp theo trí nhớ của mô hình. 
-            Thay vào đó, tài liệu được chia nhỏ, chuyển thành vector, lưu vào cơ sở dữ liệu 
-            và truy xuất lại khi có câu hỏi.
+            App chuyển mọi dữ liệu đầu vào về dạng văn bản trước khi đưa vào RAG.
+            Với PDF scan, ảnh và video, hệ thống dùng vision model để đọc/mô tả nội dung.
         </div>
-
-        <div class="pipeline-grid">
-            <div class="pipeline-item">
-                <div class="pipeline-num">1</div>
-                <div class="pipeline-title">PDF</div>
-                <div class="pipeline-desc">Người dùng tải file PDF lên hệ thống.</div>
-            </div>
-            <div class="pipeline-item">
-                <div class="pipeline-num">2</div>
-                <div class="pipeline-title">Chunking</div>
-                <div class="pipeline-desc">Văn bản được chia thành nhiều đoạn nhỏ có overlap.</div>
-            </div>
-            <div class="pipeline-item">
-                <div class="pipeline-num">3</div>
-                <div class="pipeline-title">Embedding</div>
-                <div class="pipeline-desc">Mỗi đoạn được chuyển thành vector số.</div>
-            </div>
-            <div class="pipeline-item">
-                <div class="pipeline-num">4</div>
-                <div class="pipeline-title">Retrieval</div>
-                <div class="pipeline-desc">Hệ thống tìm các đoạn gần nhất với câu hỏi.</div>
-            </div>
+        <div class="type-grid">
+            <div class="type-box">PDF</div>
+            <div class="type-box">TXT</div>
+            <div class="type-box">Ảnh</div>
+            <div class="type-box">Âm thanh</div>
+            <div class="type-box">Video</div>
         </div>
     </div>
     """,
@@ -616,58 +494,91 @@ st.markdown(
 
 
 # =========================
-# UPLOAD
+# UPLOAD FILE
 # =========================
-st.markdown("## Tải tài liệu PDF")
+st.markdown("## 1. Tải file lên hệ thống")
 
 uploaded_file = st.file_uploader(
-    "Chọn file PDF",
-    type=["pdf"]
+    "Chọn file PDF, TXT, ảnh, audio hoặc video",
+    type=[
+        "pdf", "txt",
+        "png", "jpg", "jpeg", "webp",
+        "mp3", "wav", "m4a",
+        "mp4", "mov", "avi", "mkv"
+    ]
 )
 
 if uploaded_file is not None:
-    if st.session_state.pdf_name != uploaded_file.name:
+    # Nếu upload file mới thì reset dữ liệu cũ
+    if st.session_state.file_name != uploaded_file.name:
         st.session_state.collection = None
         st.session_state.messages = []
+        st.session_state.file_name = uploaded_file.name
+        st.session_state.file_type = ""
+        st.session_state.extracted_text = ""
+        st.session_state.chunk_count = 0
 
     if st.session_state.collection is None:
-        with st.spinner("Đang xử lý tài liệu PDF..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-                temp_file.write(uploaded_file.read())
-                temp_path = temp_file.name
+        with st.spinner("Đang kiểm tra và xử lý file. Audio/video/PDF scan có thể mất lâu hơn..."):
+            file_type, text, status_message = extract_text_from_file(uploaded_file)
 
-            text = read_pdf(temp_path)
-            chunks = chunk_text(text)
-            collection = create_vector_db(chunks)
+            st.session_state.file_type = file_type
+            st.session_state.extracted_text = text
 
-            st.session_state.collection = collection
-            st.session_state.pdf_name = uploaded_file.name
+            if not text.strip():
+                st.error(status_message)
+            else:
+                chunks = chunk_text(text)
 
-        st.success(f"Đã xử lý thành công tài liệu: {uploaded_file.name}")
+                if not chunks:
+                    st.error("Không tạo được chunk từ nội dung đã trích xuất.")
+                else:
+                    try:
+                        collection = create_vector_db(chunks)
 
-if st.session_state.pdf_name:
+                        st.session_state.collection = collection
+                        st.session_state.chunk_count = len(chunks)
+
+                        st.success(status_message)
+                        st.info(f"Loại dữ liệu: {file_type} | Số chunk đã tạo: {len(chunks)}")
+
+                    except Exception as e:
+                        st.error(f"Lỗi khi tạo vector database: {e}")
+
+
+if st.session_state.file_name:
     st.markdown(
         f"""
         <div class="section-card">
-            <div class="section-title">Tài liệu đang sử dụng</div>
-            <div class="section-text">{st.session_state.pdf_name}</div>
+            <div class="section-title">File đang sử dụng</div>
+            <div class="section-text">
+                Tên file: <b>{st.session_state.file_name}</b><br>
+                Loại dữ liệu: <b>{st.session_state.file_type}</b><br>
+                Số chunk: <b>{st.session_state.chunk_count}</b>
+            </div>
         </div>
         """,
         unsafe_allow_html=True
     )
+
+    with st.expander("Xem nội dung đã trích xuất"):
+        if st.session_state.extracted_text:
+            st.write(st.session_state.extracted_text[:5000])
+        else:
+            st.write("Chưa có nội dung được trích xuất.")
 
 
 # =========================
 # CHAT
 # =========================
-st.markdown("## Hỏi đáp với tài liệu")
+st.markdown("## 2. Hỏi đáp với dữ liệu")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
 
-question = st.chat_input("Nhập câu hỏi của bạn về tài liệu...")
+question = st.chat_input("Nhập câu hỏi của bạn về file đã tải lên...")
 
 if question:
     st.session_state.messages.append(
@@ -678,16 +589,32 @@ if question:
         st.write(question)
 
     if st.session_state.collection is None:
-        answer = "Bạn cần tải tài liệu PDF lên trước khi đặt câu hỏi."
+        answer = "Bạn cần tải file lên và chờ hệ thống xử lý xong trước khi đặt câu hỏi."
     else:
-        with st.spinner("Đang tìm thông tin trong tài liệu và tạo câu trả lời..."):
-            retrieved_chunks = retrieve_chunks(
-                st.session_state.collection,
-                question,
-                n_results=n_results
-            )
+        # Bước 1: Trả lời trực tiếp cho câu hỏi về SĐT/Zalo/email
+        direct_answer = direct_answer_from_text(
+            question=question,
+            extracted_text=st.session_state.extracted_text
+        )
 
-            answer = generate_answer(question, retrieved_chunks)
+        if direct_answer:
+            answer = direct_answer
+        else:
+            # Bước 2: Nếu không phải câu hỏi dạng số/email thì dùng RAG
+            with st.spinner("Đang tìm thông tin liên quan và tạo câu trả lời..."):
+                retrieved_chunks = retrieve_chunks(
+                    collection=st.session_state.collection,
+                    question=question,
+                    n_results=N_RESULTS
+                )
+
+                with st.expander("Xem các đoạn dữ liệu chatbot đã tìm thấy"):
+                    for i, chunk in enumerate(retrieved_chunks, start=1):
+                        st.markdown(f"**Chunk {i}:**")
+                        st.write(chunk[:1000])
+                        st.markdown("---")
+
+                answer = generate_answer(question, retrieved_chunks)
 
     st.session_state.messages.append(
         {"role": "assistant", "content": answer}
@@ -697,11 +624,43 @@ if question:
         st.write(answer)
 
 
+# =========================
+# EVALUATION MODE
+# =========================
+st.markdown("## 3. Chế độ đánh giá nghiên cứu")
+
 st.markdown(
     """
-    <div class="footer">
-        RAG PDF Assistant · Built with Streamlit, ChromaDB and Ollama
-    </div>
-    """,
-    unsafe_allow_html=True
+    Chế độ này dùng file `evaluation_questions.csv` để chạy một bộ câu hỏi test.
+    Kết quả sẽ được lưu vào `evaluation_results.csv`.
+    Sau đó nhóm chấm điểm thủ công theo các tiêu chí:
+    correctness, groundedness, completeness, clarity, refusal.
+    """
 )
+
+if st.button("Chạy đánh giá nghiên cứu"):
+    if st.session_state.collection is None:
+        st.warning("Bạn cần upload và xử lý file trước khi chạy đánh giá.")
+    else:
+        try:
+            with st.spinner("Đang chạy bộ câu hỏi đánh giá..."):
+                result_df = run_evaluation(
+                    collection=st.session_state.collection,
+                    questions_csv_path="evaluation_questions.csv"
+                )
+
+            st.success("Đã chạy đánh giá xong. Kết quả lưu tại evaluation_results.csv")
+            st.dataframe(result_df)
+
+        except FileNotFoundError:
+            st.error("Chưa tìm thấy file evaluation_questions.csv.")
+        except Exception as e:
+            st.error(f"Lỗi khi chạy đánh giá: {e}")
+
+
+try:
+    result_df = pd.read_csv("evaluation_results.csv")
+    with st.expander("Xem evaluation_results.csv hiện tại"):
+        st.dataframe(result_df)
+except Exception:
+    pass

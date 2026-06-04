@@ -2,3 +2,8 @@ streamlit
 pypdf
 chromadb
 ollama
+pymupdf
+pillow
+opencv-python
+faster-whisper
+pandas
