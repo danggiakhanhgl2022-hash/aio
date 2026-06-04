@@ -40,7 +40,8 @@ def create_vector_db(chunks):
 def retrieve_chunks(collection, question, n_results=3):
     """
     Tìm các chunk liên quan nhất với câu hỏi.
-    n_results=3 nghĩa là lấy 3 đoạn liên quan nhất.
+    n_results=3 nghĩa là lấy 3 đoạn liên quan nhất.\
+    .....
     """
     question_embedding = get_embedding(question)
 
