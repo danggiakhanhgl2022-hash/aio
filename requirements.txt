@@ -2,7 +2,7 @@ streamlit
 pypdf
 chromadb
 ollama
-pymupdf
+PyMuPDF
 pillow
 opencv-python
 faster-whisper
