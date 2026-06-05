@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import ollama
 
 from src.multimodal_loader import extract_text_from_file
 from src.chunking import chunk_text
@@ -25,11 +26,35 @@ st.set_page_config(
 
 
 # =========================
-# CSS
+# CSS FIX FONT TIẾNG VIỆT + KHÔNG LỖI ICON UPLOAD
 # =========================
 st.markdown(
     """
     <style>
+    html, body, .stApp, .stApp p, .stApp div, .stApp span, .stApp label,
+    .stApp button, .stApp input, .stApp textarea {
+        font-family: Arial, "Segoe UI", sans-serif;
+    }
+
+    [data-testid="stFileUploader"] svg,
+    [data-testid="stFileUploader"] span[data-testid="stIconMaterial"],
+    span[data-testid="stIconMaterial"],
+    .material-symbols-rounded,
+    .material-icons {
+        font-family: "Material Symbols Rounded", "Material Icons" !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+        line-height: 1 !important;
+        letter-spacing: normal !important;
+        text-transform: none !important;
+        display: inline-block !important;
+        white-space: nowrap !important;
+        word-wrap: normal !important;
+        direction: ltr !important;
+        -webkit-font-feature-settings: "liga" !important;
+        -webkit-font-smoothing: antialiased !important;
+    }
+
     .stApp {
         background: #f7f2eb;
         color: #142033;
@@ -64,16 +89,16 @@ st.markdown(
     }
 
     .brand-title {
-        font-family: Georgia, serif;
         font-size: 32px;
         font-weight: 900;
         color: #142033;
+        letter-spacing: -0.5px;
     }
 
     .brand-subtitle {
         font-size: 14px;
         color: #667085;
-        margin-top: 2px;
+        margin-top: 4px;
     }
 
     .nav-menu {
@@ -103,9 +128,8 @@ st.markdown(
     }
 
     .hero-title {
-        font-family: Georgia, serif;
         font-size: 48px;
-        line-height: 1.14;
+        line-height: 1.18;
         font-weight: 900;
         color: #142033;
         letter-spacing: -1px;
@@ -114,7 +138,8 @@ st.markdown(
 
     .hero-title span {
         color: #bd5c49;
-        font-style: italic;
+        font-style: normal;
+        font-weight: 900;
     }
 
     .hero-desc {
@@ -151,9 +176,8 @@ st.markdown(
     }
 
     .preview-title {
-        font-family: Georgia, serif;
         font-size: 32px;
-        line-height: 1.25;
+        line-height: 1.3;
         font-weight: 900;
         color: white;
         margin-bottom: 18px;
@@ -186,7 +210,6 @@ st.markdown(
     }
 
     .section-title {
-        font-family: Georgia, serif;
         font-size: 32px;
         font-weight: 900;
         color: #142033;
@@ -226,7 +249,6 @@ st.markdown(
     }
 
     .sidebar-title {
-        font-family: Georgia, serif;
         font-size: 23px;
         font-weight: 900;
         color: #142033;
@@ -279,6 +301,11 @@ st.markdown(
 
     h1, h2, h3 {
         color: #142033 !important;
+        letter-spacing: -0.5px;
+    }
+
+    p, div, span, label {
+        font-variant-ligatures: none;
     }
 
     @media (max-width: 900px) {
@@ -307,8 +334,129 @@ st.markdown(
 
 
 # =========================
+# HELPER FUNCTIONS
+# =========================
+
+def contains_chinese(text: str) -> bool:
+    """
+    Kiểm tra text có ký tự tiếng Trung hay không.
+    """
+    if not text:
+        return False
+
+    for char in text:
+        if "\u4e00" <= char <= "\u9fff":
+            return True
+
+    return False
+
+
+def force_vietnamese_text(text: str) -> str:
+    """
+    Ép nội dung phân tích ảnh về tiếng Việt.
+    Dùng khi vision model trả lẫn tiếng Trung.
+    """
+    if not text or not text.strip():
+        return text
+
+    if not contains_chinese(text):
+        return text
+
+    prompt = f"""
+Bạn là hệ thống biên tập tiếng Việt.
+
+Hãy viết lại nội dung sau HOÀN TOÀN bằng TIẾNG VIỆT.
+
+YÊU CẦU BẮT BUỘC:
+- Không được để lại bất kỳ chữ tiếng Trung nào.
+- Không được để lại câu tiếng Trung nào.
+- Dịch toàn bộ phần tiếng Trung sang tiếng Việt.
+- Được giữ nguyên các nhãn kỹ thuật tiếng Anh như:
+  File Document, Vector Database, Search, Retriever, Question, Prompt, Vicuna LLM, Answer, Output.
+- Không thêm thông tin mới.
+- Không bịa.
+- Giữ cấu trúc đánh số 1, 2, 3, 4, 5 nếu có.
+- Viết rõ ràng, dễ hiểu.
+
+Nội dung cần sửa:
+{text}
+
+Bản tiếng Việt:
+"""
+
+    try:
+        response = ollama.chat(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            options={"temperature": 0}
+        )
+
+        result = response.get("message", {}).get("content", "")
+
+        if result and result.strip():
+            result = result.strip()
+
+            if contains_chinese(result):
+                second_prompt = f"""
+Nội dung sau vẫn còn tiếng Trung. Hãy dịch lại toàn bộ sang tiếng Việt.
+Không được để lại bất kỳ ký tự tiếng Trung nào.
+Không thêm thông tin mới.
+Không bịa.
+
+Nội dung:
+{result}
+
+Bản tiếng Việt hoàn chỉnh:
+"""
+                second_response = ollama.chat(
+                    model=LLM_MODEL,
+                    messages=[
+                        {"role": "user", "content": second_prompt}
+                    ],
+                    options={"temperature": 0}
+                )
+
+                second_result = second_response.get("message", {}).get("content", "")
+
+                if second_result and second_result.strip():
+                    return second_result.strip()
+
+            return result
+
+        return text
+
+    except Exception:
+        return text
+
+
+def is_image_question(question: str) -> bool:
+    """
+    Nhận diện câu hỏi đang hỏi về ảnh/sơ đồ/slide.
+    Nếu đúng thì ưu tiên dùng last_image_text.
+    """
+    if not question:
+        return False
+
+    q = question.lower()
+
+    keywords = [
+        "ảnh", "hình", "hình ảnh", "ảnh vừa tải", "hình vừa tải",
+        "ảnh mới nhất", "hình mới nhất", "sơ đồ", "biểu đồ", "slide",
+        "screenshot", "nội dung ảnh", "ảnh nói gì", "hình nói gì",
+        "tóm tắt ảnh", "tóm tắt hình", "giải thích ảnh",
+        "giải thích hình", "giải thích sơ đồ", "trong ảnh",
+        "trong hình"
+    ]
+
+    return any(keyword in q for keyword in keywords)
+
+
+# =========================
 # SESSION STATE
 # =========================
+
 defaults = {
     "messages": [],
     "collection": None,
@@ -320,6 +468,8 @@ defaults = {
     "user_name": "",
     "user_email": "",
     "user_phone": "",
+    "chat_image_name": "",
+    "last_image_text": "",
 }
 
 for key, value in defaults.items():
@@ -330,6 +480,7 @@ for key, value in defaults.items():
 # =========================
 # SIDEBAR
 # =========================
+
 with st.sidebar:
     st.markdown(
         """
@@ -408,6 +559,7 @@ with st.sidebar:
 # =========================
 # TOP NAVIGATION
 # =========================
+
 st.markdown(
     """
     <div class="top-nav">
@@ -431,6 +583,7 @@ st.markdown(
 # =========================
 # HERO
 # =========================
+
 left, right = st.columns([1.05, 0.95], gap="large")
 
 with left:
@@ -454,7 +607,7 @@ with right:
         """
         <div class="preview-card">
             <div class="preview-inner">
-                <div class="preview-small">RAG Research System</div>
+                <div class="preview-small">RAG RESEARCH SYSTEM</div>
                 <div class="preview-title">Một chatbot cho nhiều loại dữ liệu</div>
                 <div class="preview-text">
                     Phù hợp để demo project và phát triển thành báo cáo nghiên cứu về hiệu quả các cấu hình RAG.
@@ -472,6 +625,7 @@ with right:
 # =========================
 # SUPPORTED TYPES
 # =========================
+
 st.markdown(
     """
     <div class="section-card">
@@ -494,8 +648,9 @@ st.markdown(
 
 
 # =========================
-# UPLOAD FILE
+# UPLOAD FILE CHÍNH
 # =========================
+
 st.markdown("## 1. Tải file lên hệ thống")
 
 uploaded_file = st.file_uploader(
@@ -505,11 +660,11 @@ uploaded_file = st.file_uploader(
         "png", "jpg", "jpeg", "webp",
         "mp3", "wav", "m4a",
         "mp4", "mov", "avi", "mkv"
-    ]
+    ],
+    key="main_file_uploader"
 )
 
 if uploaded_file is not None:
-    # Nếu upload file mới thì reset dữ liệu cũ
     if st.session_state.file_name != uploaded_file.name:
         st.session_state.collection = None
         st.session_state.messages = []
@@ -517,6 +672,8 @@ if uploaded_file is not None:
         st.session_state.file_type = ""
         st.session_state.extracted_text = ""
         st.session_state.chunk_count = 0
+        st.session_state.last_image_text = ""
+        st.session_state.chat_image_name = ""
 
     if st.session_state.collection is None:
         with st.spinner("Đang kiểm tra và xử lý file. Audio/video/PDF scan có thể mất lâu hơn..."):
@@ -563,7 +720,16 @@ if st.session_state.file_name:
 
     with st.expander("Xem nội dung đã trích xuất"):
         if st.session_state.extracted_text:
-            st.write(st.session_state.extracted_text[:5000])
+            preview_text = st.session_state.extracted_text[:5000]
+
+            st.text_area(
+                "Nội dung trích xuất",
+                value=preview_text,
+                height=300
+            )
+
+            if len(st.session_state.extracted_text) > 5000:
+                st.info("Nội dung dài hơn 5000 ký tự, chỉ đang hiển thị phần đầu để dễ xem.")
         else:
             st.write("Chưa có nội dung được trích xuất.")
 
@@ -571,6 +737,7 @@ if st.session_state.file_name:
 # =========================
 # CHAT
 # =========================
+
 st.markdown("## 2. Hỏi đáp với dữ liệu")
 
 for message in st.session_state.messages:
@@ -578,7 +745,95 @@ for message in st.session_state.messages:
         st.write(message["content"])
 
 
-question = st.chat_input("Nhập câu hỏi của bạn về file đã tải lên...")
+# =========================
+# UPLOAD ẢNH BỔ SUNG
+# =========================
+
+st.markdown("### Tải ảnh nhanh trong phần hỏi đáp")
+
+chat_image = st.file_uploader(
+    "Chọn ảnh để hỏi nhanh",
+    type=["png", "jpg", "jpeg", "webp"],
+    key="chat_image_uploader"
+)
+
+if chat_image is not None:
+    if st.session_state.chat_image_name != chat_image.name:
+        st.session_state.chat_image_name = chat_image.name
+
+        with st.spinner("Đang đọc nội dung ảnh và thêm vào dữ liệu hiện tại..."):
+            file_type, image_text, status_message = extract_text_from_file(chat_image)
+
+            if not image_text.strip():
+                st.error(status_message)
+
+            elif image_text.startswith("[VISION ERROR]"):
+                st.error(image_text)
+
+            else:
+                image_text = force_vietnamese_text(image_text)
+                st.session_state.last_image_text = image_text
+
+                if st.session_state.extracted_text.strip():
+                    combined_text = (
+                        st.session_state.extracted_text
+                        + "\n\n==============================\n"
+                        + "NGUỒN: ẢNH BỔ SUNG\n"
+                        + "==============================\n"
+                        + image_text
+                    )
+                else:
+                    combined_text = (
+                        "==============================\n"
+                        + "NGUỒN: ẢNH BỔ SUNG\n"
+                        + "==============================\n"
+                        + image_text
+                    )
+
+                st.session_state.extracted_text = combined_text
+                st.session_state.file_type = "Combined Data"
+
+                if st.session_state.file_name:
+                    st.session_state.file_name = (
+                        st.session_state.file_name + " + " + chat_image.name
+                    )
+                else:
+                    st.session_state.file_name = chat_image.name
+
+                chunks = chunk_text(combined_text)
+
+                if not chunks:
+                    st.error("Không tạo được chunk từ nội dung ảnh.")
+                else:
+                    try:
+                        collection = create_vector_db(chunks)
+
+                        st.session_state.collection = collection
+                        st.session_state.chunk_count = len(chunks)
+
+                        st.success("Đã xử lý ảnh và thêm vào dữ liệu hiện tại.")
+                        st.info(f"Đã cập nhật dữ liệu | Số chunk mới: {len(chunks)}")
+
+                    except Exception as e:
+                        st.error(f"Lỗi khi tạo vector database sau khi thêm ảnh: {e}")
+
+if st.session_state.last_image_text:
+    with st.expander("Xem nội dung ảnh mới nhất đã trích xuất"):
+        fixed_image_text = force_vietnamese_text(st.session_state.last_image_text)
+        st.session_state.last_image_text = fixed_image_text
+
+        st.text_area(
+            "Nội dung ảnh",
+            value=fixed_image_text[:5000],
+            height=260
+        )
+
+
+# =========================
+# QUESTION ANSWERING
+# =========================
+
+question = st.chat_input("Nhập câu hỏi của bạn về file hoặc ảnh đã tải lên...")
 
 if question:
     st.session_state.messages.append(
@@ -589,9 +844,9 @@ if question:
         st.write(question)
 
     if st.session_state.collection is None:
-        answer = "Bạn cần tải file lên và chờ hệ thống xử lý xong trước khi đặt câu hỏi."
+        answer = "Bạn cần tải file hoặc ảnh lên và chờ hệ thống xử lý xong trước khi đặt câu hỏi."
+
     else:
-        # Bước 1: Trả lời trực tiếp cho câu hỏi về SĐT/Zalo/email
         direct_answer = direct_answer_from_text(
             question=question,
             extracted_text=st.session_state.extracted_text
@@ -599,8 +854,42 @@ if question:
 
         if direct_answer:
             answer = direct_answer
+
+        elif is_image_question(question) and st.session_state.last_image_text.strip():
+            image_context = st.session_state.last_image_text
+            image_context = force_vietnamese_text(image_context)
+            st.session_state.last_image_text = image_context
+
+            with st.expander("Xem nội dung ảnh đã trích xuất", expanded=True):
+                st.text_area(
+                    "Nội dung ảnh",
+                    value=image_context,
+                    height=260
+                )
+
+            if image_context.startswith("[VISION ERROR]"):
+                answer = "Không thể phân tích ảnh vì model đọc ảnh đang lỗi:\n\n" + image_context
+
+            else:
+                image_question = f"""
+Chỉ dựa trên nội dung ảnh đã trích xuất dưới đây để trả lời bằng tiếng Việt.
+
+Câu hỏi: {question}
+
+Nội dung ảnh:
+{image_context}
+
+Yêu cầu:
+- Trả lời đúng trọng tâm câu hỏi.
+- Nếu là sơ đồ thì giải thích theo luồng.
+- Không bịa thêm thông tin ngoài nội dung ảnh.
+"""
+                answer = generate_answer(
+                    image_question,
+                    [image_context]
+                )
+
         else:
-            # Bước 2: Nếu không phải câu hỏi dạng số/email thì dùng RAG
             with st.spinner("Đang tìm thông tin liên quan và tạo câu trả lời..."):
                 retrieved_chunks = retrieve_chunks(
                     collection=st.session_state.collection,
@@ -608,13 +897,30 @@ if question:
                     n_results=N_RESULTS
                 )
 
+                if st.session_state.last_image_text.strip():
+                    fixed_image_text = force_vietnamese_text(st.session_state.last_image_text)
+                    st.session_state.last_image_text = fixed_image_text
+                    retrieved_chunks = [fixed_image_text] + retrieved_chunks
+
                 with st.expander("Xem các đoạn dữ liệu chatbot đã tìm thấy"):
                     for i, chunk in enumerate(retrieved_chunks, start=1):
                         st.markdown(f"**Chunk {i}:**")
-                        st.write(chunk[:1000])
+                        st.text_area(
+                            f"Nội dung chunk {i}",
+                            value=chunk[:1200],
+                            height=180
+                        )
                         st.markdown("---")
 
-                answer = generate_answer(question, retrieved_chunks)
+                combined_question = f"""
+Trả lời bằng tiếng Việt dựa trên dữ liệu đã truy xuất.
+Nếu có nội dung ảnh thì hãy kết hợp cả nội dung ảnh và nội dung file.
+Câu hỏi: {question}
+"""
+
+                answer = generate_answer(combined_question, retrieved_chunks)
+
+    answer = force_vietnamese_text(answer)
 
     st.session_state.messages.append(
         {"role": "assistant", "content": answer}
@@ -627,6 +933,7 @@ if question:
 # =========================
 # EVALUATION MODE
 # =========================
+
 st.markdown("## 3. Chế độ đánh giá nghiên cứu")
 
 st.markdown(

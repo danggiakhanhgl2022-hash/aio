@@ -1,15 +1,29 @@
 import os
 import tempfile
+import base64
 
 import pypdf
-import fitz  # pymupdf
 import cv2
 import ollama
 from faster_whisper import WhisperModel
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
-VISION_MODEL = "llama3.2-vision"
+from src.config import (
+    LLM_MODEL,
+    VISION_MODEL,
+    MAX_PDF_VISION_PAGES,
+    MAX_VIDEO_FRAMES,
+    MAX_FILE_SIZE_MB
+)
 
+
+# =========================
+# FILE UTILS
+# =========================
 
 def save_uploaded_file(uploaded_file, suffix):
     """
@@ -22,7 +36,7 @@ def save_uploaded_file(uploaded_file, suffix):
 
 def safe_delete(path):
     """
-    Xóa file tạm, tránh lỗi nếu file không tồn tại.
+    Xóa file tạm an toàn.
     """
     try:
         if path and os.path.exists(path):
@@ -50,10 +64,65 @@ def clean_text(text):
     return "\n".join(lines)
 
 
+# =========================
+# NORMALIZE VISION OUTPUT
+# =========================
+
+def normalize_vision_output_to_vietnamese(text):
+    """
+    Chuẩn hóa output của vision model sang tiếng Việt.
+    Dùng để sửa lỗi model vision trả lẫn tiếng Trung/Anh.
+    """
+    if not text or not text.strip():
+        return ""
+
+    prompt = f"""
+Bạn là hệ thống biên tập ngôn ngữ.
+
+Hãy viết lại nội dung sau HOÀN TOÀN bằng TIẾNG VIỆT.
+
+YÊU CẦU BẮT BUỘC:
+- Không được dùng tiếng Trung.
+- Không được dùng tiếng Nhật.
+- Không được dùng tiếng Anh trừ các nhãn kỹ thuật bắt buộc như: File Document, Vector Database, Search, Retriever, Question, Prompt, Vicuna LLM, Answer, Output.
+- Dịch toàn bộ phần tiếng Trung hoặc ngôn ngữ khác sang tiếng Việt.
+- Không thêm thông tin mới.
+- Không bịa thêm.
+- Giữ cấu trúc đánh số 1, 2, 3, 4, 5 nếu có.
+- Viết rõ ràng, dễ hiểu.
+
+Nội dung cần viết lại:
+{text}
+"""
+
+    try:
+        response = ollama.chat(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            options={"temperature": 0}
+        )
+
+        result = response.get("message", {}).get("content", "")
+
+        if result and result.strip():
+            return clean_text(result)
+
+        return text
+
+    except Exception:
+        return text
+
+
+# =========================
+# PDF TEXT
+# =========================
+
 def read_pdf_text_with_pypdf(path):
     """
     Đọc text thật trong PDF bằng pypdf.
-    Phù hợp với PDF xuất từ Word, Google Docs, LaTeX.
+    Phù hợp với PDF xuất từ Word, Google Docs, slide, LaTeX.
     """
     try:
         reader = pypdf.PdfReader(path)
@@ -64,26 +133,104 @@ def read_pdf_text_with_pypdf(path):
             pages_text.append(page_text)
 
         return clean_text("\n".join(pages_text))
-    except Exception:
-        return ""
 
+    except Exception as e:
+        return f"[PDF TEXT ERROR] {e}"
+
+
+# =========================
+# IMAGE / VISION
+# =========================
 
 def image_path_to_text(image_path):
     """
-    Dùng Ollama vision model để mô tả ảnh thành text.
-    Có thể xử lý ảnh, biểu đồ, sơ đồ, ảnh chụp tài liệu.
+    Đọc/mô tả ảnh bằng vision model Ollama.
+    Có 3 cách gọi để tăng khả năng chạy với nhiều vision model khác nhau.
     """
-    prompt = """
-Bạn là hệ thống trích xuất thông tin từ hình ảnh.
 
-Yêu cầu:
-1. Nếu ảnh có chữ, hãy đọc lại chữ quan trọng.
-2. Nếu ảnh có bảng, hãy mô tả nội dung bảng.
-3. Nếu ảnh có biểu đồ/sơ đồ, hãy giải thích ý nghĩa chính.
-4. Nếu ảnh là ảnh chụp tài liệu, hãy tóm tắt nội dung.
-5. Trả lời bằng tiếng Việt, rõ ràng, có cấu trúc.
+    prompt = """
+Bạn là hệ thống đọc hiểu hình ảnh chính xác.
+
+NHIỆM VỤ:
+Phân tích ảnh này và trả lời bằng TIẾNG VIỆT.
+
+QUY TẮC BẮT BUỘC:
+- Chỉ mô tả những gì thật sự nhìn thấy trong ảnh.
+- Không tự suy luận thêm nội dung ngoài ảnh.
+- Không đổi nghĩa nội dung trong ảnh.
+- Nếu ảnh là sơ đồ, hãy đọc đúng các nhãn và mô tả đúng mũi tên.
+- Nếu ảnh là ảnh chụp màn hình, slide, tài liệu học tập, bảng hoặc biểu đồ, hãy đọc các chữ quan trọng.
+- Nếu có chữ tiếng Anh như File Document, Vector Database, Search, Retriever, Question, Prompt, Vicuna LLM, Answer, Output thì được giữ nguyên.
+- Nếu xuất hiện tiếng Trung hoặc ngôn ngữ khác trong kết quả, phải dịch sang tiếng Việt.
+- Không được trả lời bằng tiếng Trung.
+- Không được xen tiếng Trung.
+- Nếu không chắc chữ nào, hãy ghi "không rõ".
+- Với sơ đồ RAG, hãy hiểu là quy trình hỏi đáp / tạo câu trả lời từ tài liệu, không phải tạo câu hỏi.
+
+TRẢ LỜI THEO CẤU TRÚC:
+1. Loại ảnh:
+2. Chữ/nhãn nhìn thấy trong ảnh:
+3. Các thành phần chính:
+4. Luồng xử lý trong ảnh:
+5. Tóm tắt ngắn gọn:
 """
 
+    errors = []
+
+    try:
+        with open(image_path, "rb") as image_file:
+            image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
+    except Exception as e:
+        return f"[VISION ERROR] Không đọc được file ảnh: {e}"
+
+    # Cách 1: ollama.chat với base64
+    try:
+        response = ollama.chat(
+            model=VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_base64],
+                }
+            ],
+            options={"temperature": 0}
+        )
+
+        content = response.get("message", {}).get("content", "")
+
+        if content and content.strip():
+            content = clean_text(content)
+            content = normalize_vision_output_to_vietnamese(content)
+            return content
+
+        errors.append("Cách 1 trả về rỗng.")
+
+    except Exception as e:
+        errors.append(f"Cách 1 lỗi: {e}")
+
+    # Cách 2: ollama.generate với base64
+    try:
+        response = ollama.generate(
+            model=VISION_MODEL,
+            prompt=prompt,
+            images=[image_base64],
+            options={"temperature": 0}
+        )
+
+        content = response.get("response", "")
+
+        if content and content.strip():
+            content = clean_text(content)
+            content = normalize_vision_output_to_vietnamese(content)
+            return content
+
+        errors.append("Cách 2 trả về rỗng.")
+
+    except Exception as e:
+        errors.append(f"Cách 2 lỗi: {e}")
+
+    # Cách 3: ollama.chat với đường dẫn file
     try:
         response = ollama.chat(
             model=VISION_MODEL,
@@ -94,26 +241,40 @@ Yêu cầu:
                     "images": [image_path],
                 }
             ],
+            options={"temperature": 0}
         )
 
-        return response["message"]["content"]
+        content = response.get("message", {}).get("content", "")
+
+        if content and content.strip():
+            content = clean_text(content)
+            content = normalize_vision_output_to_vietnamese(content)
+            return content
+
+        errors.append("Cách 3 trả về rỗng.")
+
     except Exception as e:
-        return f"[Không thể xử lý ảnh bằng vision model: {e}]"
+        errors.append(f"Cách 3 lỗi: {e}")
+
+    return "[VISION ERROR] Không thể xử lý ảnh.\n" + "\n".join(errors)
 
 
-def read_pdf_by_rendering_pages(path, max_pages=8):
+# =========================
+# PDF SCAN / PDF IMAGE
+# =========================
+
+def read_pdf_by_rendering_pages(path, max_pages=MAX_PDF_VISION_PAGES):
     """
-    Fallback cho PDF scan hoặc PDF nhiều hình:
-    chuyển từng trang PDF thành ảnh rồi dùng vision model đọc/mô tả.
-
-    max_pages để tránh file quá dài làm xử lý quá lâu.
+    Nếu PDF là scan hoặc ít text, chuyển từng trang thành ảnh rồi dùng vision model.
     """
+    if fitz is None:
+        return "[PDF VISION ERROR] Máy chưa cài PyMuPDF."
+
     texts = []
 
     try:
         doc = fitz.open(path)
         total_pages = len(doc)
-
         pages_to_process = min(total_pages, max_pages)
 
         for page_index in range(pages_to_process):
@@ -124,7 +285,7 @@ def read_pdf_by_rendering_pages(path, max_pages=8):
             pix.save(img_path)
 
             page_text = image_path_to_text(img_path)
-            texts.append(f"--- Nội dung trích xuất từ trang {page_index + 1} ---\n{page_text}")
+            texts.append(f"--- Trang {page_index + 1} ---\n{page_text}")
 
             safe_delete(img_path)
 
@@ -132,44 +293,50 @@ def read_pdf_by_rendering_pages(path, max_pages=8):
 
         if total_pages > max_pages:
             texts.append(
-                f"\n[Lưu ý: PDF có {total_pages} trang. App chỉ xử lý vision {max_pages} trang đầu để tránh quá tải.]"
+                f"[Lưu ý] PDF có {total_pages} trang, app chỉ xử lý {max_pages} trang đầu."
             )
 
         return clean_text("\n\n".join(texts))
 
     except Exception as e:
-        return f"[Không thể render PDF thành ảnh: {e}]"
+        return f"[PDF VISION ERROR] {e}"
 
 
 def read_pdf_file(uploaded_file):
     """
-    Xử lý PDF toàn diện:
-    - Ưu tiên đọc text thật bằng pypdf.
-    - Nếu text quá ít, fallback sang vision/OCR bằng cách render trang PDF thành ảnh.
+    Xử lý PDF:
+    - Ưu tiên đọc text bằng pypdf.
+    - Nếu PDF scan hoặc ít text thì render trang thành ảnh và dùng vision model.
     """
     path = save_uploaded_file(uploaded_file, ".pdf")
 
     try:
         text = read_pdf_text_with_pypdf(path)
 
-        # Nếu PDF đọc được đủ text thì dùng luôn
-        if len(text.strip()) >= 300:
+        if text and not text.startswith("[PDF TEXT ERROR]") and len(text.strip()) >= 300:
             return "PDF Text", text
 
-        # Nếu PDF scan hoặc text quá ít thì fallback sang vision
         vision_text = read_pdf_by_rendering_pages(path)
 
         combined = ""
-        if text.strip():
-            combined += "PHẦN TEXT ĐỌC BẰNG PYPDF:\n" + text + "\n\n"
 
-        combined += "PHẦN TRÍCH XUẤT TỪ HÌNH ẢNH/TRANG PDF:\n" + vision_text
+        if text and not text.startswith("[PDF TEXT ERROR]"):
+            combined += "PHẦN TEXT ĐỌC BẰNG PYPDF:\n"
+            combined += text
+            combined += "\n\n"
+
+        combined += "PHẦN TRÍCH XUẤT TỪ ẢNH PDF:\n"
+        combined += vision_text
 
         return "PDF Scan / PDF Image", clean_text(combined)
 
     finally:
         safe_delete(path)
 
+
+# =========================
+# TXT
+# =========================
 
 def read_txt_file(uploaded_file):
     """
@@ -182,11 +349,15 @@ def read_txt_file(uploaded_file):
     except UnicodeDecodeError:
         try:
             text = raw.decode("latin-1")
-        except Exception:
-            text = ""
+        except Exception as e:
+            return "Text", f"[TXT ERROR] {e}"
 
     return "Text", clean_text(text)
 
+
+# =========================
+# IMAGE FILE
+# =========================
 
 def read_image_file(uploaded_file):
     """
@@ -198,9 +369,14 @@ def read_image_file(uploaded_file):
     try:
         text = image_path_to_text(path)
         return "Image", clean_text(text)
+
     finally:
         safe_delete(path)
 
+
+# =========================
+# AUDIO
+# =========================
 
 def read_audio_file(uploaded_file):
     """
@@ -214,28 +390,26 @@ def read_audio_file(uploaded_file):
         segments, info = model.transcribe(path)
 
         transcript_parts = []
+
         for segment in segments:
             transcript_parts.append(segment.text)
 
         transcript = " ".join(transcript_parts)
+
         return "Audio", clean_text(transcript)
 
     except Exception as e:
-        return "Audio", f"[Không thể chuyển âm thanh thành text: {e}]"
+        return "Audio", f"[AUDIO ERROR] {e}"
 
     finally:
         safe_delete(path)
 
 
-def extract_audio_from_video(video_path):
-    """
-    Tách audio từ video bằng OpenCV là hạn chế, nên hàm này hiện chưa tách audio trực tiếp.
-    App sẽ xử lý video bằng frame trước.
-    """
-    return ""
+# =========================
+# VIDEO
+# =========================
 
-
-def read_video_file(uploaded_file, max_frames=6):
+def read_video_file(uploaded_file, max_frames=MAX_VIDEO_FRAMES):
     """
     Xử lý video:
     - Lấy một số frame đại diện.
@@ -250,13 +424,13 @@ def read_video_file(uploaded_file, max_frames=6):
         cap = cv2.VideoCapture(video_path)
 
         if not cap.isOpened():
-            return "Video", "Không thể mở video."
+            return "Video", "[VIDEO ERROR] Không thể mở video."
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         if total_frames <= 0:
             cap.release()
-            return "Video", "Video không có frame hợp lệ."
+            return "Video", "[VIDEO ERROR] Video không có frame hợp lệ."
 
         if total_frames <= max_frames:
             positions = list(range(total_frames))
@@ -275,43 +449,46 @@ def read_video_file(uploaded_file, max_frames=6):
             cv2.imwrite(frame_path, frame)
 
             frame_text = image_path_to_text(frame_path)
-            descriptions.append(
-                f"--- Frame {idx + 1} của video ---\n{frame_text}"
-            )
+            descriptions.append(f"--- Frame {idx + 1} ---\n{frame_text}")
 
             safe_delete(frame_path)
 
         cap.release()
 
         if not descriptions:
-            return "Video", "Không trích xuất được frame nào từ video."
+            return "Video", "[VIDEO ERROR] Không trích xuất được frame nào."
 
         return "Video", clean_text("\n\n".join(descriptions))
 
     except Exception as e:
-        return "Video", f"[Không thể xử lý video: {e}]"
+        return "Video", f"[VIDEO ERROR] {e}"
 
     finally:
         safe_delete(video_path)
 
 
+# =========================
+# MAIN EXTRACTOR
+# =========================
+
 def extract_text_from_file(uploaded_file):
     """
     Hàm tổng xử lý mọi file upload.
+
     Trả về:
     - file_type
     - text đã trích xuất
     - status_message
     """
+
     if uploaded_file is None:
         return "None", "", "Chưa có file."
 
     file_name = uploaded_file.name.lower()
     file_size_mb = uploaded_file.size / (1024 * 1024)
 
-    # Giới hạn dung lượng để app không bị đứng
-    if file_size_mb > 200:
-        return "Too Large", "", "File quá lớn. Vui lòng chọn file nhỏ hơn 200MB."
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        return "Too Large", "", f"File quá lớn. Vui lòng chọn file nhỏ hơn {MAX_FILE_SIZE_MB}MB."
 
     try:
         if file_name.endswith(".pdf"):
@@ -334,11 +511,20 @@ def extract_text_from_file(uploaded_file):
 
         text = clean_text(text)
 
+        if (
+            text.startswith("[VISION ERROR]")
+            or text.startswith("[PDF")
+            or text.startswith("[AUDIO ERROR]")
+            or text.startswith("[VIDEO ERROR]")
+            or text.startswith("[TXT ERROR]")
+        ):
+            return file_type, text, text
+
         if not text.strip():
             return file_type, "", "Không trích xuất được nội dung từ file."
 
-        if len(text.strip()) < 50:
-            return file_type, text, "Nội dung trích xuất được khá ngắn. Kết quả hỏi đáp có thể chưa tốt."
+        if len(text.strip()) < 20:
+            return file_type, text, "Nội dung trích xuất được khá ngắn, nhưng vẫn có thể thử hỏi đáp."
 
         return file_type, text, "Xử lý file thành công."
 
