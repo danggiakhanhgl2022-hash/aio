@@ -1,50 +1,65 @@
-# Khánh AI Notebook V51
+# Khánh AI Notebook V52
 
-Ứng dụng Streamlit dùng để upload file PDF, đọc nội dung theo từng mục và trả lời theo đúng cấu trúc trong tài liệu. App hỗ trợ hiển thị xen kẽ **văn bản → hình ảnh/code box → văn bản**, giúp đọc tài liệu giống như đang xem lại file gốc.
+Bản V52 giữ nguyên chức năng của V51 nhưng đã tách phần xử lý PDF thành nhiều file nhỏ để dễ đọc, dễ sửa và dễ debug hơn.
 
 ## 1. Chức năng chính
 
-* Upload file PDF.
-* Tách nội dung PDF thành từng mục/section.
-* Hỏi theo tên mục, ví dụ: `III.2. Chunking`, `4. Giả mã`, `IV.2. Tạo file ứng dụng`.
-* Trả kết quả đúng phần được hỏi, không đọc lan sang mục khác.
-* Giữ thứ tự nội dung trong file: văn bản, hình ảnh, code box, khung ghi chú.
-* Hỗ trợ tìm mục có số La Mã như `III.2`, `IV.1` và mục số thường như `1.`, `2.`, `4.`.
-* Nếu gõ hơi lệch tiêu đề, ví dụ `4. Giá mã` thay vì `4. Giả mã`, app vẫn ưu tiên tìm theo số mục `4.`.
+App dùng Streamlit để upload PDF và hỏi theo mục trong tài liệu.
 
-## 2. Cấu trúc file
+Kết quả được hiển thị theo đúng thứ tự trong file:
+
+```text
+văn bản → hình ảnh/code box/khung ghi chú → văn bản → hình ảnh
+```
+
+Ví dụ câu hỏi:
+
+```text
+III.2. Chunking
+4. Giả mã
+IV.2. Tạo file ứng dụng
+hình 2
+Mục lục
+```
+
+## 2. Cấu trúc project
 
 ```text
 project/
 │
 ├── app.py
 ├── requirements.txt
-├── INSTALL_V51.ps1
+├── INSTALL_V52.ps1
 ├── README.md
 │
 └── src/
     ├── __init__.py
     ├── config.py
+    ├── rendering.py
+    │
     ├── pdf_section_interleaved.py
-    └── rendering.py
+    ├── pdf_utils.py
+    ├── pdf_sections.py
+    ├── pdf_blocks.py
+    └── pdf_interleaved.py
 ```
 
 ## 3. Vai trò từng file
 
 ### `app.py`
 
-File chính để chạy giao diện Streamlit.
+File giao diện chính của Streamlit.
 
 Nhiệm vụ:
 
-* Tạo giao diện upload PDF.
-* Quản lý danh sách file đã upload.
-* Nhận câu hỏi từ người dùng.
-* Gọi hàm đọc PDF trong `pdf_section_interleaved.py`.
-* Hiển thị kết quả trả lời ra màn hình.
-* Hiển thị sidebar gồm nguồn tài liệu, version và debug.
+- Upload PDF.
+- Tạo notebook.
+- Nhận câu hỏi từ người dùng.
+- Gọi hàm xử lý PDF.
+- Hiển thị kết quả.
+- Hiển thị sidebar, nguồn tài liệu và debug.
 
-Chạy app bằng lệnh:
+Chạy app:
 
 ```powershell
 python -m streamlit run app.py
@@ -52,61 +67,14 @@ python -m streamlit run app.py
 
 ---
 
-### `requirements.txt`
-
-Chứa danh sách thư viện cần cài.
-
-Các thư viện chính:
-
-```text
-streamlit
-pymupdf
-pillow
-```
-
-Trong đó:
-
-* `streamlit`: tạo giao diện web.
-* `pymupdf`: đọc PDF, tách text, crop hình ảnh/code box.
-* `pillow`: hỗ trợ xử lý hình ảnh.
-
-Cài bằng lệnh:
-
-```powershell
-pip install -r requirements.txt
-```
-
----
-
-### `INSTALL_V51.ps1`
-
-File cài đặt nhanh cho Windows PowerShell.
-
-Nhiệm vụ:
-
-* Tắt tiến trình Python/Streamlit cũ.
-* Xóa thư mục `src` và `runtime` cũ trong `D:\aio`.
-* Copy code mới vào `D:\aio`.
-* Cài thư viện từ `requirements.txt`.
-* Kiểm tra version app.
-
-Chạy bằng lệnh:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\INSTALL_V51.ps1
-```
-
----
-
 ### `src/config.py`
 
-File cấu hình chung của app.
+File cấu hình chung.
 
 Nội dung chính:
 
 ```python
-APP_VERSION = "NUMERIC_SECTION_FUZZY_FIX_V51"
+APP_VERSION = "REFACTORED_PDF_MODULES_V52"
 PDF_ZOOM = 2.0
 RUNTIME_DIR = "runtime"
 SHOW_COPY_TEXT = False
@@ -114,65 +82,196 @@ SHOW_COPY_TEXT = False
 
 Ý nghĩa:
 
-* `APP_VERSION`: tên phiên bản hiện tại.
-* `PDF_ZOOM`: độ nét khi crop ảnh/code box từ PDF.
-* `RUNTIME_DIR`: thư mục lưu file upload và ảnh tạm.
-* `SHOW_COPY_TEXT`: bật/tắt phần text copy. Mặc định tắt để giao diện gọn hơn.
-
----
-
-### `src/pdf_section_interleaved.py`
-
-File xử lý PDF quan trọng nhất.
-
-Nhiệm vụ chính:
-
-* Đọc text trong PDF.
-* Nhận diện heading/mục như `III.2. Chunking`, `4. Giả mã`, `IV.2. Tạo file ứng dụng`.
-* Xác định điểm bắt đầu và kết thúc của mục được hỏi.
-* Tránh đọc dư sang mục tiếp theo.
-* Nhận diện hình ảnh, caption, code box và khung ghi chú.
-* Crop hình ảnh/code box từ PDF.
-* Trả kết quả theo thứ tự xen kẽ:
-
-```text
-văn bản → hình/code/box → văn bản → hình/code/box
-```
-
-Các nhóm hàm chính:
-
-* Hàm chuẩn hóa text: xử lý dấu, khoảng trắng, lỗi tách chữ.
-* Hàm nhận diện mục: tìm heading trong PDF.
-* Hàm cắt section: lấy đúng nội dung của mục được hỏi.
-* Hàm nhận diện ảnh/code/box: quyết định phần nào hiển thị dạng text, phần nào crop thành ảnh.
-* Hàm `build_interleaved_blocks()`: hàm chính dùng để tạo kết quả trả lời.
+- `APP_VERSION`: tên phiên bản hiện tại.
+- `PDF_ZOOM`: độ nét khi crop ảnh/code box.
+- `RUNTIME_DIR`: thư mục lưu dữ liệu tạm.
+- `SHOW_COPY_TEXT`: bật/tắt phần text copy.
 
 ---
 
 ### `src/rendering.py`
 
-File hiển thị kết quả ra giao diện Streamlit.
+File hiển thị kết quả lên giao diện.
 
 Nhiệm vụ:
 
-* Hiển thị block văn bản.
-* Hiển thị block hình ảnh.
-* Hiển thị caption nếu có.
-* Render toàn bộ kết quả theo đúng thứ tự đã xử lý từ PDF.
+- Hiển thị văn bản.
+- Hiển thị hình ảnh/code box.
+- Hiển thị caption nếu có.
+- Render kết quả xen kẽ theo đúng thứ tự đã xử lý.
 
-Các hàm chính:
+Hàm chính:
 
-* `render_text_block()`: hiển thị văn bản.
-* `render_image_block()`: hiển thị ảnh/code box.
-* `render_interleaved_result()`: hiển thị toàn bộ kết quả gồm cả text và ảnh.
+```python
+render_text_block()
+render_image_block()
+render_interleaved_result()
+```
 
 ---
 
-### `src/__init__.py`
+### `src/pdf_section_interleaved.py`
 
-File đánh dấu thư mục `src` là một Python package.
+File trung gian để giữ tương thích với `app.py`.
 
-File này thường để trống nhưng cần có để Python import các module trong `src`.
+Trước đây toàn bộ code PDF nằm trong file này. Từ V52, file này chỉ import lại các hàm chính từ các file nhỏ hơn.
+
+Nhờ vậy `app.py` vẫn dùng được import cũ:
+
+```python
+from src.pdf_section_interleaved import build_interleaved_blocks
+```
+
+---
+
+### `src/pdf_utils.py`
+
+File chứa hàm tiện ích dùng chung khi xử lý PDF.
+
+Nhiệm vụ:
+
+- Chuẩn hóa text.
+- Bỏ dấu tiếng Việt để so sánh dễ hơn.
+- Sửa một số lỗi text bị dính chữ sau khi extract PDF.
+- Lấy text từ block PDF.
+- Lấy tọa độ block.
+- Crop vùng ảnh/code box từ PDF.
+- Nhận diện header/footer.
+- Nhận diện trang mục lục.
+
+Hàm quan trọng:
+
+```python
+norm()
+clean_text_display()
+extract_block_text()
+block_rect()
+union_rect()
+crop_region()
+crop_union()
+is_footer_or_header()
+is_toc_page()
+```
+
+---
+
+### `src/pdf_sections.py`
+
+File xử lý việc tìm mục/section trong PDF.
+
+Nhiệm vụ:
+
+- Nhận diện heading như `III.2. Chunking`, `4. Giả mã`, `IV.2. Tạo file ứng dụng`.
+- Tách mã mục và tên mục.
+- So sánh số mục La Mã và số thường.
+- Tìm điểm bắt đầu và kết thúc của section.
+- Tránh đọc dư sang mục kế tiếp.
+- Hỗ trợ tìm gần đúng khi tiêu đề gõ hơi lệch.
+
+Hàm quan trọng:
+
+```python
+parse_section_id_from_text()
+looks_like_heading()
+split_query_section()
+fuzzy_title_match()
+should_end_section()
+should_stop_at_heading()
+find_section_range()
+```
+
+---
+
+### `src/pdf_blocks.py`
+
+File phân loại các block nằm trong section.
+
+Nhiệm vụ:
+
+- Nhận diện caption hình ảnh.
+- Nhận diện bullet.
+- Nhận diện dòng code.
+- Nhận diện tiêu đề code box.
+- Nhận diện box/khung ghi chú.
+- Lấy toàn bộ block thô trong section.
+- Thêm text block vào output.
+
+Hàm quan trọng:
+
+```python
+is_caption_text()
+is_bullet_paragraph()
+is_numbered_line()
+is_code_line()
+is_code_panel_title()
+is_box_title()
+collect_raw_blocks()
+add_text_block()
+```
+
+---
+
+### `src/pdf_interleaved.py`
+
+File điều phối chính để tạo câu trả lời.
+
+Nhiệm vụ:
+
+- Gọi `find_section_range()` để tìm mục cần đọc.
+- Gọi `collect_raw_blocks()` để lấy nội dung trong mục.
+- Duyệt từng block theo đúng thứ tự trong PDF.
+- Block văn bản thì giữ dạng text.
+- Block hình/code box/khung ghi chú thì crop thành ảnh.
+- Trả kết quả theo dạng xen kẽ.
+
+Hàm quan trọng:
+
+```python
+build_interleaved_blocks()
+extract_toc_as_text()
+find_figure_by_number()
+```
+
+Trong đó `build_interleaved_blocks()` là hàm quan trọng nhất.
+
+---
+
+### `requirements.txt`
+
+Danh sách thư viện cần cài:
+
+```text
+streamlit
+pymupdf
+pillow
+```
+
+Cài thư viện:
+
+```powershell
+pip install -r requirements.txt
+```
+
+---
+
+### `INSTALL_V52.ps1`
+
+File cài nhanh trên Windows.
+
+Nhiệm vụ:
+
+- Tắt Python/Streamlit cũ.
+- Xóa `src`, `runtime`, `__pycache__` cũ trong `D:\aio`.
+- Copy code mới vào `D:\aio`.
+- Cài thư viện.
+- In version để kiểm tra.
+
+Chạy:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\INSTALL_V52.ps1
+```
 
 ---
 
@@ -182,85 +281,87 @@ Thư mục được tạo tự động khi chạy app.
 
 Nhiệm vụ:
 
-* Lưu file PDF người dùng upload.
-* Lưu ảnh/code box đã crop từ PDF.
-* Lưu dữ liệu tạm trong quá trình chạy.
+- Lưu PDF đã upload.
+- Lưu ảnh/code box đã crop.
+- Lưu dữ liệu tạm.
 
-Có thể xóa thư mục này khi muốn reset app hoặc upload file mới.
+Có thể xóa thư mục này khi muốn reset app hoặc upload PDF mới.
 
----
+## 4. Luồng xử lý chính
 
-## 4. Cách sử dụng
+Khi người dùng hỏi một mục, app chạy theo luồng:
 
-### Bước 1: Cài thư viện
+```text
+app.py
+→ pdf_section_interleaved.py
+→ pdf_interleaved.py
+→ pdf_sections.py tìm section
+→ pdf_blocks.py phân loại block
+→ pdf_utils.py crop ảnh/làm sạch text
+→ rendering.py hiển thị kết quả
+```
+
+## 5. Cách chạy
+
+Cài thư viện:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-### Bước 2: Chạy app
+Chạy app:
 
 ```powershell
 python -m streamlit run app.py
 ```
 
-### Bước 3: Upload PDF
+Hoặc cài nhanh:
 
-Ở sidebar bên trái:
-
-1. Chọn file PDF.
-2. Bấm `Tạo notebook`.
-3. Đợi app xử lý xong.
-
-### Bước 4: Hỏi nội dung trong file
-
-Ví dụ:
-
-```text
-III.2. Chunking
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\INSTALL_V52.ps1
 ```
 
-```text
-III.3. Embedding và lưu vào Vector Database
-```
+## 6. Khi đổi PDF
 
-```text
-4. Giả mã
-```
+Khi đổi sang file PDF khác:
 
-```text
-hình 2
-```
-
-```text
-Mục lục
-```
-
-## 5. Lưu ý khi đổi file PDF
-
-Khi đổi sang file PDF khác, nên làm theo thứ tự:
-
-1. Bấm `Xóa` trong app.
-2. Upload file PDF mới.
+1. Bấm `Xóa`.
+2. Upload PDF mới.
 3. Bấm `Tạo notebook`.
 4. Hỏi lại theo mục trong file mới.
 
-Nếu không xóa notebook cũ, app có thể còn dùng dữ liệu tạm của file trước.
+Nếu không xóa, app có thể còn dữ liệu tạm của file trước.
 
-## 6. Phiên bản V51 đã sửa gì?
+## 7. Gợi ý sửa code
 
-Bản V51 sửa các lỗi chính:
+Sửa logic nhận diện heading:
 
-* Hỏi mục số thường như `4. Giả mã` không còn bị lỗi.
-* Gõ lệch nhẹ như `4. Giá mã` vẫn tìm được vì app ưu tiên số mục.
-* Các dòng giả mã như `1. Đặt left...`, `2. Trong khi...` không bị hiểu nhầm là section mới.
-* Hỏi `III.2. Chunking` không còn bị đọc dư sang phần `IV`.
-* Hỏi các mục La Mã như `IV.2. Tạo file ứng dụng` vẫn hoạt động.
-* Code box được crop thành ảnh nguyên khối thay vì bị tách vụn.
+```text
+src/pdf_sections.py
+```
 
-## 7. Giới hạn hiện tại
+Sửa logic nhận diện code box/hình/box:
 
-* App phụ thuộc vào cách PDF được xuất text. Nếu PDF scan ảnh hoàn toàn, cần OCR mới đọc tốt.
-* Một số PDF có layout quá phức tạp có thể cần chỉnh thêm logic nhận diện heading.
-* App hiện tập trung vào đọc PDF theo mục, chưa phải chatbot suy luận sâu như LLM.
-* Nếu muốn hỏi ý nghĩa, tóm tắt hoặc giải thích nâng cao, có thể cần tích hợp thêm model LLM.
+```text
+src/pdf_blocks.py
+```
+
+Sửa logic crop ảnh hoặc làm sạch text:
+
+```text
+src/pdf_utils.py
+```
+
+Sửa luồng tạo kết quả xen kẽ text + ảnh:
+
+```text
+src/pdf_interleaved.py
+```
+
+Sửa giao diện:
+
+```text
+app.py
+src/rendering.py
+```
