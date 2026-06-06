@@ -1,184 +1,182 @@
+import math
 import re
-import time
-import chromadb
-import ollama
+import unicodedata
 
-from src.config import EMBED_MODEL
+try:
+    import ollama
+except Exception:
+    ollama = None
+
+try:
+    from src.config import EMBED_MODEL
+except Exception:
+    EMBED_MODEL = "nomic-embed-text:latest"
 
 
-def get_embeddings(texts):
-    """
-    Chuyển danh sách text thành embedding vector.
-    """
-    if not texts:
-        return []
+def normalize_text(text: str) -> str:
+    if not text:
+        return ""
 
-    response = ollama.embed(
-        model=EMBED_MODEL,
-        input=texts
-    )
+    text = str(text)
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = text.replace("đ", "d").replace("Đ", "D")
+    return text.lower().strip()
 
-    return response["embeddings"]
+
+def tokenize(text: str):
+    text = normalize_text(text)
+    tokens = re.split(r"[^a-zA-Z0-9À-Ỵà-ỵ]+", text)
+    stop = {
+        "la", "là", "gi", "gì", "cua", "của", "va", "và", "cho", "toi", "tôi",
+        "hay", "hãy", "neu", "nêu", "ve", "về", "trong", "file", "tai", "tài",
+        "lieu", "liệu", "mot", "một", "cac", "các", "nhung", "những"
+    }
+    return [t for t in tokens if len(t) >= 2 and t not in stop]
+
+
+def cosine(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+
+    if na == 0 or nb == 0:
+        return 0.0
+
+    return dot / (na * nb)
+
+
+def embed_text(text: str):
+    if ollama is None:
+        return None
+
+    models = [EMBED_MODEL, "nomic-embed-text:latest", "bge-m3"]
+
+    for model in models:
+        try:
+            response = ollama.embeddings(model=model, prompt=text[:4000])
+
+            if isinstance(response, dict):
+                emb = response.get("embedding")
+
+                if emb:
+                    return emb
+
+            if hasattr(response, "embedding"):
+                return response.embedding
+
+        except Exception:
+            continue
+
+    return None
+
+
+def keyword_score(question: str, chunk: str):
+    q_norm = normalize_text(question)
+    c_norm = normalize_text(chunk)
+    tokens = tokenize(question)
+
+    score = 0.0
+
+    if q_norm and q_norm in c_norm:
+        score += 50
+
+    # phrase đặc biệt
+    phrase_map = {
+        "large language models": ["large language models", "llms", "llm", "mo hinh ngon ngu lon"],
+        "retrieval augmented generation": ["retrieval augmented generation", "rag"],
+        "vector database": ["vector database"],
+    }
+
+    for phrase, variants in phrase_map.items():
+        if phrase in q_norm:
+            for v in variants:
+                if normalize_text(v) in c_norm:
+                    score += 40
+
+    for token in tokens:
+        if token in c_norm:
+            score += 5
+
+    if "loai: pdf_text" in c_norm:
+        score += 2
+
+    if "loai: pdf_figure_context" in c_norm:
+        score += 3
+
+    return score
 
 
 def create_vector_db(chunks):
     """
-    Tạo ChromaDB collection từ danh sách chunks.
-    Lưu metadata để biết chunk số mấy.
+    Tạo collection dạng dict.
+    Có embedding nếu Ollama embedding chạy được, nếu không fallback keyword search.
     """
-    if not chunks:
-        raise ValueError("Không có chunk nào để lưu vào vector database.")
+    clean_chunks = [str(c) for c in chunks if str(c).strip()]
+    embeddings = []
+    embedding_ok = True
 
-    client = chromadb.Client()
+    for chunk in clean_chunks:
+        emb = embed_text(chunk[:3000])
 
-    collection_name = f"rag_{int(time.time())}"
+        if emb is None:
+            embedding_ok = False
+            embeddings = []
+            break
 
-    collection = client.get_or_create_collection(
-        name=collection_name,
-        metadata={"hnsw:space": "cosine"}
-    )
+        embeddings.append(emb)
 
-    embeddings = get_embeddings(chunks)
-
-    collection.add(
-        ids=[str(i) for i in range(len(chunks))],
-        documents=chunks,
-        embeddings=embeddings,
-        metadatas=[{"chunk_id": i} for i in range(len(chunks))]
-    )
-
-    return collection
-
-
-def extract_keywords(question):
-    """
-    Tách keyword quan trọng từ câu hỏi.
-    Hỗ trợ tốt hơn cho câu hỏi về số điện thoại, email, ngày tháng, mã số, tên riêng.
-    """
-    question_lower = question.lower()
-
-    keywords = []
-
-    # Keyword thủ công hay gặp
-    important_terms = [
-        "sđt", "zalo", "sdt", "số điện thoại", "điện thoại",
-        "email", "gmail", "ngày", "tháng", "năm",
-        "tác giả", "người thực hiện", "biên soạn",
-        "project", "module", "địa chỉ", "liên hệ"
-    ]
-
-    for term in important_terms:
-        if term in question_lower:
-            keywords.append(term)
-
-    # Bắt các chuỗi số trong câu hỏi
-    numbers = re.findall(r"\d+", question_lower)
-    keywords.extend(numbers)
-
-    # Tách thêm từ dài hơn 2 ký tự
-    words = re.findall(r"[a-zA-ZÀ-ỹ0-9/]+", question_lower)
-    for word in words:
-        if len(word) >= 3:
-            keywords.append(word)
-
-    # Loại trùng
-    unique_keywords = []
-    seen = set()
-
-    for kw in keywords:
-        if kw not in seen:
-            unique_keywords.append(kw)
-            seen.add(kw)
-
-    return unique_keywords
-
-
-def keyword_search_chunks(collection, question, max_results=6):
-    """
-    Tìm chunk bằng keyword search.
-    Dùng cho các câu hỏi về số điện thoại, Zalo, email, mã số, tên riêng.
-    """
-    try:
-        all_data = collection.get(include=["documents"])
-        documents = all_data.get("documents", [])
-    except Exception:
-        return []
-
-    keywords = extract_keywords(question)
-
-    matched_chunks = []
-
-    for doc in documents:
-        doc_lower = doc.lower()
-
-        score = 0
-
-        for kw in keywords:
-            if kw.lower() in doc_lower:
-                score += 1
-
-        # Ưu tiên chunk có số nếu câu hỏi hỏi về số/SĐT/Zalo
-        if any(term in question.lower() for term in ["sđt", "sdt", "zalo", "số điện thoại", "điện thoại"]):
-            if re.search(r"\d{8,12}", doc):
-                score += 3
-
-        if score > 0:
-            matched_chunks.append((score, doc))
-
-    matched_chunks.sort(key=lambda x: x[0], reverse=True)
-
-    return [doc for score, doc in matched_chunks[:max_results]]
+    return {
+        "chunks": clean_chunks,
+        "embeddings": embeddings,
+        "embedding_ok": embedding_ok,
+    }
 
 
 def retrieve_chunks(collection, question, n_results=6):
-    """
-    Tìm các chunk liên quan nhất.
-
-    Bản cải tiến:
-    1. Semantic search bằng embedding.
-    2. Keyword search cho số điện thoại, Zalo, email, mã số, tên riêng.
-    3. Luôn thêm chunk đầu tài liệu vì thường chứa tiêu đề/tác giả.
-    """
-
-    if collection is None:
+    if not collection:
         return []
 
-    # 1. Semantic search
-    try:
-        question_embedding = get_embeddings([question])[0]
+    chunks = collection.get("chunks", [])
+    embeddings = collection.get("embeddings", [])
+    embedding_ok = collection.get("embedding_ok", False)
 
-        results = collection.query(
-            query_embeddings=[question_embedding],
-            n_results=n_results
-        )
+    q_emb = embed_text(question) if embedding_ok else None
 
-        semantic_docs = results.get("documents", [[]])[0]
-    except Exception:
-        semantic_docs = []
+    scored = []
 
-    # 2. Keyword search
-    keyword_docs = keyword_search_chunks(
-        collection=collection,
-        question=question,
-        max_results=n_results
-    )
+    for idx, chunk in enumerate(chunks):
+        k_score = keyword_score(question, chunk)
+        e_score = 0.0
 
-    # 3. Luôn lấy chunk đầu
-    try:
-        first_chunks = collection.get(
-            ids=["0", "1"],
-            include=["documents"]
-        ).get("documents", [])
-    except Exception:
-        first_chunks = []
+        if q_emb is not None and idx < len(embeddings):
+            e_score = cosine(q_emb, embeddings[idx]) * 20
 
-    # 4. Gộp lại, ưu tiên keyword trước
-    final_chunks = []
+        score = k_score + e_score
+
+        if score > 0:
+            scored.append((score, -idx, chunk))
+
+    # Nếu không có điểm, fallback lấy chunk đầu để tránh rỗng.
+    if not scored:
+        return chunks[:n_results]
+
+    scored.sort(reverse=True)
+
+    result = []
     seen = set()
 
-    for doc in keyword_docs + first_chunks + semantic_docs:
-        if doc and doc not in seen:
-            final_chunks.append(doc)
-            seen.add(doc)
+    for _, _, chunk in scored:
+        key = chunk[:350]
 
-    return final_chunks
+        if key not in seen:
+            result.append(chunk)
+            seen.add(key)
+
+        if len(result) >= n_results:
+            break
+
+    return result

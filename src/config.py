@@ -1,12 +1,11 @@
+# Cấu hình model Ollama
 LLM_MODEL = "llama3.2:latest"
 EMBED_MODEL = "nomic-embed-text:latest"
-VISION_MODEL = "minicpm-v:8b"
+
+# Nếu máy bạn đang dùng model khác, đổi tại đây:
+# LLM_MODEL = "llama3.2:latest"
+# EMBED_MODEL = "bge-m3"
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
-N_RESULTS = 4
-TEMPERATURE = 0
-
-MAX_PDF_VISION_PAGES = 6
-MAX_VIDEO_FRAMES = 6
-MAX_FILE_SIZE_MB = 200
+N_RESULTS = 6

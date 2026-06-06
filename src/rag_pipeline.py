@@ -1,63 +1,77 @@
-import ollama
+try:
+    import ollama
+except Exception:
+    ollama = None
 
-from src.config import LLM_MODEL, TEMPERATURE
+try:
+    from src.config import LLM_MODEL
+except Exception:
+    LLM_MODEL = "llama3.2:latest"
 
 
-PROMPT_TEMPLATE = """
-Bạn là trợ lý hỏi đáp dữ liệu.
+def generate_answer(question_or_prompt, chunks):
+    """
+    Sinh câu trả lời bằng Ollama.
+    Nếu Ollama lỗi, trả về câu trả lời fallback dựa trên nguồn.
+    """
+    sources = "\n\n".join(
+        f"[Nguồn {i+1}]\n{chunk[:2500]}"
+        for i, chunk in enumerate(chunks or [])
+    )
 
-QUY TẮC BẮT BUỘC:
-- Chỉ sử dụng thông tin trong CONTEXT để trả lời.
-- Không được thêm kiến thức ngoài CONTEXT.
-- Không được tự bổ sung bước, công nghệ, thuật toán nếu CONTEXT không nhắc đến.
-- Nếu CONTEXT là nội dung trích xuất từ ảnh, hãy trả lời dựa đúng vào mô tả ảnh đó.
-- Nếu câu hỏi hỏi về hình ảnh, sơ đồ, biểu đồ hoặc slide, hãy mô tả đúng các thành phần nhìn thấy trong CONTEXT.
-- Nếu câu hỏi hỏi về Large Language Models, LLM, AI, machine learning, deep learning, hãy chỉ trả lời theo các thông tin có trong CONTEXT.
-- Nếu câu hỏi hỏi về số điện thoại, SĐT, Zalo, email, mã số, ngày tháng, hãy tìm chính xác các con số hoặc ký hiệu trong CONTEXT.
-- Nếu câu hỏi hỏi "ai", "của ai", "tác giả", "người thực hiện", "người biên soạn", hãy tìm tên người trong CONTEXT.
-- Nếu CONTEXT thật sự không có thông tin liên quan, hãy nói đúng câu: "Tôi không tìm thấy thông tin này trong dữ liệu đã tải lên."
-- Không tự bịa thêm thông tin.
-- Trả lời bằng tiếng Việt.
-- Trả lời ngắn gọn, rõ ràng.
+    if not sources.strip():
+        return "Tôi không tìm thấy thông tin này trong tài liệu đã tải lên."
 
-CONTEXT:
-{context}
+    prompt = f"""
+Bạn là trợ lý hỏi đáp tài liệu.
 
-QUESTION:
-{question}
+Chỉ được dùng phần NGUỒN bên dưới để trả lời.
+Không bịa thêm ngoài nguồn.
+Nếu nguồn có thông tin liên quan, hãy trả lời dựa trên nguồn.
+Chỉ nói không tìm thấy khi nguồn thật sự không có thông tin liên quan.
 
-ANSWER:
+CÂU HỎI:
+{question_or_prompt}
+
+NGUỒN:
+{sources}
+
+TRẢ LỜI BẰNG TIẾNG VIỆT:
 """
 
-
-def generate_answer(question, retrieved_chunks):
-    """
-    Sinh câu trả lời dựa trên context đã retrieve.
-    Đây là phần LLM trong pipeline RAG.
-    """
-
-    if not retrieved_chunks:
-        return "Tôi không tìm thấy thông tin liên quan trong dữ liệu đã tải lên."
-
-    context = "\n\n".join(retrieved_chunks)
-
-    prompt = PROMPT_TEMPLATE.format(
-        context=context,
-        question=question
-    )
+    if ollama is None:
+        return fallback_answer(sources)
 
     try:
         response = ollama.chat(
             model=LLM_MODEL,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            options={
-                "temperature": TEMPERATURE
-            }
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0},
         )
 
-        return response["message"]["content"]
+        if isinstance(response, dict):
+            content = response.get("message", {}).get("content", "")
+
+            if content.strip():
+                return content.strip()
+
+        if hasattr(response, "message") and hasattr(response.message, "content"):
+            content = response.message.content
+
+            if content.strip():
+                return content.strip()
 
     except Exception as e:
-        return f"Lỗi khi gọi mô hình LLM: {e}"
+        return fallback_answer(sources, error=str(e))
+
+    return fallback_answer(sources)
+
+
+def fallback_answer(sources, error=None):
+    msg = "Tôi tìm thấy các đoạn nguồn liên quan trong tài liệu, nhưng LLM/Ollama chưa trả lời được."
+
+    if error:
+        msg += f"\n\nLỗi LLM: {error}"
+
+    msg += "\n\nĐoạn nguồn liên quan:\n" + sources[:1800]
+    return msg
