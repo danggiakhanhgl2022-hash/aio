@@ -5,7 +5,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 
 
-ROMAN_RE = r"(?:XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)"
+ROMAN_RE = r"(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
 SECTION_ID_RE = rf"(?:{ROMAN_RE}(?:\.\d+)*|\d+(?:\.\d+)*)"
 
 
