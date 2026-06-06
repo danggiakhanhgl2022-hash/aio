@@ -1,9 +1,3 @@
-streamlit
-pypdf
-chromadb
-ollama
-PyMuPDF
-pillow
-opencv-python
-faster-whisper
-pandas
+streamlit>=1.32.0
+pymupdf>=1.23.0
+pillow>=10.0.0

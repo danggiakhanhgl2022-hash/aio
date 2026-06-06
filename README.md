@@ -1,48 +1,25 @@
-# Khánh AI Notebook - Final Robust V4
+# Khánh AI Notebook V50
 
-## Cách cài
+Bản V50 sửa lỗi không tìm thấy các mục IV / IV.1 / IV.2.
 
-Copy toàn bộ thư mục/file vào project `D:\aio`.
+Lỗi trước:
+- Hỏi `IV.2. Tạo file ứng dụng` hoặc `IV. Xây dựng giao diện với Streamlit` thì báo không tìm thấy.
+- Nguyên nhân: app nhận nhầm trang 11 là trang Mục lục vì trang đó có nhiều heading IV, IV.1, IV.2 và có dấu `...` trong code.
 
-Quan trọng nhất là các file:
+Fix V50:
+- Chỉ coi là Mục lục nếu có chữ `Mục lục` ở đầu trang hoặc nhiều dòng dot-leader dạng `........ 7`.
+- Các mục IV, IV.1, IV.2 sẽ được tìm đúng.
+- Vẫn giữ strict stop: hỏi III.2 sẽ không ăn sang IV.
 
-- app.py
-- src/config.py
-- src/chunking.py
-- src/vector_db.py
-- src/rag_pipeline.py
-- src/multimodal_loader.py
-
-## Cài thư viện
-
+Cách chạy:
 ```powershell
-pip install streamlit pypdf pymupdf ollama
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\INSTALL_V50.ps1
 ```
 
-## Chạy app
+Trong app phải thấy version: `TOC_FALSE_POSITIVE_FIX_V50`.
 
-```powershell
-python -m streamlit run app.py
-```
-
-## Kiểm tra đúng bản
-
-Trên giao diện phải thấy:
-
-FINAL_ROBUST_TEXT_IMAGE_V4
-
-## Quy trình test
-
-1. Bấm Xóa
-2. Upload lại PDF
-3. Bấm Tạo notebook
-4. Hỏi:
-   - Large Language Models
-   - hinh 1
-   - hinh 2
-
-## Lưu ý
-
-- Với PDF có chữ thật: đọc tốt văn bản và caption hình.
-- Với PDF scan/mờ: cần model vision như llava hoặc OCR, kết quả không thể đảm bảo 100%.
-- Với hình trong PDF có caption: hệ thống ưu tiên caption + text gần hình, không dùng vision để bịa.
+Sau đó bấm Xóa, upload lại PDF và hỏi:
+- `IV.2. Tạo file ứng dụng`
+- `IV. Xây dựng giao diện với Streamlit`
+- `III.2. Chunking`

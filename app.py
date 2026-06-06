@@ -1,320 +1,261 @@
-import os
+
 import shutil
-import tempfile
 from pathlib import Path
 
 import streamlit as st
 
-from src.config import APP_VERSION
-from src.loader import load_files, NotebookData
-from src.qa import answer_question
-from src.utils import detect_figure_query
-
-
-st.set_page_config(
-    page_title="Khánh AI Notebook",
-    page_icon="🧩",
-    layout="wide",
+from src.config import APP_VERSION, RUNTIME_DIR, PDF_ZOOM
+from src.pdf_section_interleaved import (
+    build_interleaved_blocks,
+    extract_toc_as_text,
+    find_figure_by_number,
+    norm,
 )
+from src.rendering import render_interleaved_result, render_image_block, render_text_block
 
+
+st.set_page_config(page_title="Khánh AI Notebook", page_icon="🧩", layout="wide")
 
 CSS = """
 <style>
-:root {
-  --green: #2f7d3f;
-  --green-dark: #174c2a;
-  --cream: #fbf8ef;
-  --border: #e8dfcf;
-}
-html, body, [class*="css"] {
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
 .stApp {
-  background: radial-gradient(circle at top left, #fff1f1 0, transparent 28%),
-              radial-gradient(circle at top right, #e8fff3 0, transparent 28%),
+  background: radial-gradient(circle at top left, #fff4f2 0, transparent 25%),
+              radial-gradient(circle at top right, #ebfff3 0, transparent 30%),
               #fbf8ef;
 }
-.sidebar-card {
-  border: 1px dashed var(--green);
-  border-radius: 18px;
-  padding: 18px;
-  background: rgba(255,255,255,.55);
-}
-.hero {
+section[data-testid="stSidebar"] { background: #f3f6fa; }
+.kb-hero {
   background: linear-gradient(135deg, #103d22, #2f7d3f);
-  color: white;
-  padding: 34px;
-  border-radius: 28px;
-  margin-bottom: 22px;
-  box-shadow: 0 20px 60px rgba(30,90,44,.18);
+  color: white; padding: 28px 32px; border-radius: 24px;
+  box-shadow: 0 18px 60px rgba(20,70,40,.16); margin-bottom: 18px;
 }
-.hero h1 {
-  font-size: 42px;
-  margin: 0 0 10px 0;
+.kb-hero h1 { margin: 0 0 8px 0; font-size: 36px; }
+.kb-status {
+  border: 1px solid #bfe7c3; background: #effcf0; color: #075a1d;
+  padding: 14px 18px; border-radius: 16px; font-weight: 700; margin-bottom: 18px;
 }
-.status {
-  border: 1px solid #b7e2bd;
-  background: #effcf0;
-  color: #075a1d;
-  padding: 18px 22px;
-  border-radius: 18px;
-  font-weight: 700;
+.kb-chat-card {
+  border: 1px solid #e5dbc9; background: rgba(255,255,255,.86);
+  border-radius: 22px; padding: 18px 22px; margin: 16px 0;
+  box-shadow: 0 10px 38px rgba(0,0,0,.045);
 }
-.chat-card {
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,.82);
-  border-radius: 22px;
-  padding: 20px 24px;
-  margin: 16px 0;
-  box-shadow: 0 10px 40px rgba(0,0,0,.04);
+.kb-user { border-left: 8px solid #ff4d5a; }
+.kb-bot { border-left: 8px solid #ff9f1c; }
+.kb-text-block {
+  font-size: 1.08rem; line-height: 1.85; margin: 14px 0 18px 0;
 }
-.user-card {
-  border-left: 8px solid #ff4d5a;
+.kb-caption {
+  color: #526071; font-size: .92rem; margin-top: -8px; margin-bottom: 16px;
+  text-align: center;
 }
-.bot-card {
-  border-left: 8px solid #ff9f1c;
-}
-.source-card {
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 14px;
-  background: rgba(255,255,255,.70);
-  margin-bottom: 12px;
-}
-.small-muted { color: #6b7280; font-size: 13px; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
 
-def init_state():
-    if "notebook" not in st.session_state:
-        st.session_state.notebook = None
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "last_sources" not in st.session_state:
-        st.session_state.last_sources = []
-    if "work_dir" not in st.session_state:
-        st.session_state.work_dir = None
+def ensure_state():
+    st.session_state.setdefault("pdf_paths", [])
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("last_result", None)
+    st.session_state.setdefault("upload_dir", str(Path(RUNTIME_DIR) / "uploads"))
+    st.session_state.setdefault("image_dir", str(Path(RUNTIME_DIR) / "rendered"))
 
 
-def reset_notebook():
-    st.session_state.notebook = None
+def reset_all():
+    st.session_state.pdf_paths = []
     st.session_state.messages = []
-    st.session_state.last_sources = []
-    if st.session_state.work_dir and Path(st.session_state.work_dir).exists():
-        shutil.rmtree(st.session_state.work_dir, ignore_errors=True)
-    st.session_state.work_dir = None
+    st.session_state.last_result = None
+    runtime = Path(RUNTIME_DIR)
+    if runtime.exists():
+        shutil.rmtree(runtime, ignore_errors=True)
+    (runtime / "uploads").mkdir(parents=True, exist_ok=True)
+    (runtime / "rendered").mkdir(parents=True, exist_ok=True)
 
 
-def save_uploads(uploaded_files, work_dir: Path):
-    paths = []
-    upload_dir = work_dir / "uploads"
+def save_uploads(files):
+    upload_dir = Path(st.session_state.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
-
-    for uf in uploaded_files:
-        out = upload_dir / uf.name
-        out.write_bytes(uf.getbuffer())
-        paths.append(out)
+    paths = []
+    for f in files:
+        safe_name = f.name.replace("/", "_").replace("\\", "_")
+        out = upload_dir / safe_name
+        out.write_bytes(f.getbuffer())
+        paths.append(str(out))
     return paths
 
 
-def build_quick_questions(data: NotebookData):
-    questions = []
-
-    if data.figures:
-        questions.append("hình 1")
-
-    full = data.full_text.lower()
-    if "mục lục" in full or "muc luc" in full:
-        questions.append("Mục lục")
-
-    # ưu tiên section phổ biến
-    if "giới thiệu" in full:
-        questions.append("I. Giới thiệu")
-    if "embedding" in full:
-        questions.append("III.3. Embedding và lưu vào Vector Database")
-    if "large language models" in full:
-        questions.append("Large Language Models")
-
-    questions.append("Tóm tắt tài liệu")
-    questions.append("Nội dung quan trọng")
-
-    # unique
-    out = []
-    for q in questions:
-        if q not in out:
-            out.append(q)
-    return out[:5]
+def current_pdf_path():
+    return st.session_state.pdf_paths[0] if st.session_state.pdf_paths else ""
 
 
-def render_message(role: str, content: str):
-    klass = "user-card" if role == "user" else "bot-card"
-    icon = "👤" if role == "user" else "🤖"
-    st.markdown(f"<div class='chat-card {klass}'><b>{icon}</b>", unsafe_allow_html=True)
-    st.markdown(content, unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+def is_toc_query(q: str):
+    n = norm(q)
+    return n in {"muc luc", "toc", "table of contents"} or "muc luc" in n
 
 
-init_state()
+def detect_figure_query(q: str):
+    import re
+    n = norm(q)
+    m = re.search(r"\b(?:hinh|figure|fig)\s*(\d+)\b", n)
+    return int(m.group(1)) if m else None
 
+
+def answer_query(q: str):
+    pdf = current_pdf_path()
+    if not pdf:
+        return {"kind": "text", "text": "Bạn cần upload PDF trước."}
+
+    image_dir = Path(st.session_state.image_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    if is_toc_query(q):
+        return {"kind": "text", "text": extract_toc_as_text(pdf)}
+
+    fig_no = detect_figure_query(q)
+    if fig_no is not None:
+        fig = find_figure_by_number(pdf, fig_no, image_dir=str(image_dir / f"figure_{fig_no}"), zoom=PDF_ZOOM)
+        if not fig:
+            return {"kind": "text", "text": f"Không tìm thấy hình {fig_no} trong PDF."}
+        return {"kind": "figure", "figure": fig}
+
+    safe_query = "".join(ch if ch.isalnum() else "_" for ch in q)[:80]
+    result = build_interleaved_blocks(
+        pdf_path=pdf,
+        query=q,
+        image_dir=str(image_dir / safe_query),
+        zoom=PDF_ZOOM,
+    )
+    if result:
+        return {"kind": "interleaved", "result": result}
+
+    return {
+        "kind": "text",
+        "text": "Không tìm thấy đúng mục bạn hỏi. Hãy nhập đúng tiêu đề, ví dụ: `III.2. Chunking` hoặc `Embedding và lưu vào Vector Database`.",
+    }
+
+
+def render_answer(answer):
+    kind = answer.get("kind")
+    if kind == "text":
+        render_text_block(answer.get("text", ""))
+    elif kind == "figure":
+        fig = answer.get("figure", {})
+        st.markdown(f"### Hình {fig.get('figure_id')} - trang {fig.get('page')}")
+        render_image_block(fig.get("image_path", ""), fig.get("caption", ""))
+    elif kind == "interleaved":
+        render_interleaved_result(answer.get("result"))
+    else:
+        st.write(answer)
+
+
+def quick_questions():
+    return [
+        "III.2. Chunking",
+        "III.3. Embedding và lưu vào Vector Database",
+        "III.4. Tìm kiếm đoạn liên quan (Retrieve)",
+        "Mục lục",
+        "hình 2",
+    ]
+
+
+ensure_state()
+Path(RUNTIME_DIR).mkdir(exist_ok=True)
+Path(st.session_state.upload_dir).mkdir(parents=True, exist_ok=True)
+Path(st.session_state.image_dir).mkdir(parents=True, exist_ok=True)
 
 with st.sidebar:
     st.markdown("## 📚 Nguồn tài liệu")
-    notebook_name = st.text_input("Tên notebook", "Notebook tài liệu mới")
+    st.text_input("Tên notebook", "Notebook tài liệu mới")
+    uploaded = st.file_uploader("Thêm nguồn", type=["pdf"], accept_multiple_files=True)
 
-    uploaded = st.file_uploader(
-        "Thêm nguồn",
-        type=["pdf", "txt", "md"],
-        accept_multiple_files=True,
-        help="Upload PDF/TXT. PDF có caption Hình 1/Hình 2 sẽ được tách hình riêng.",
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        create = st.button("Tạo notebook", use_container_width=True)
+    with col2:
+        clear = st.button("Xóa", use_container_width=True)
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        create_clicked = st.button("Tạo notebook", use_container_width=True)
-    with col_b:
-        if st.button("Xóa", use_container_width=True):
-            reset_notebook()
-            st.rerun()
+    if clear:
+        reset_all()
+        st.rerun()
 
-    use_vision = st.checkbox("Đọc hình ngay khi upload (chậm)", value=False)
-    st.caption("Khuyên để TẮT cho nhanh. Khi hỏi `hình 1`, app mới gọi `llava:latest` để đọc hình.")
-
-    if create_clicked:
+    if create:
         if not uploaded:
-            st.warning("Bạn cần upload ít nhất một file.")
+            st.warning("Bạn cần upload PDF.")
         else:
-            reset_notebook()
-            work_dir = Path(tempfile.mkdtemp(prefix="khanh_ai_"))
-            st.session_state.work_dir = str(work_dir)
-
-            with st.spinner("Đang đọc file nhanh, tách text và caption hình..."):
-                paths = save_uploads(uploaded, work_dir)
-                figure_dir = work_dir / "figures"
-                data = load_files(paths, figure_dir=figure_dir, use_vision=use_vision)
-                st.session_state.notebook = data
-                st.session_state.messages = []
-
-            st.success("Tạo notebook thành công.")
+            reset_all()
+            st.session_state.pdf_paths = save_uploads(uploaded)
+            st.success("Đã tạo notebook.")
             st.rerun()
 
     st.divider()
-
-    data = st.session_state.notebook
     st.markdown("## 📌 Danh sách nguồn")
-    if not data:
+    if not st.session_state.pdf_paths:
         st.info("Chưa có nguồn tài liệu.")
     else:
-        for s in data.sources:
-            st.markdown(
-                f"""
-<div class='source-card'>
-<b>{s['name']}</b><br>
-<span class='small-muted'>Loại: {s['type']} | Trang: {s.get('pages', 0)} | Chunk: {s.get('chunks', 0)} | Hình: {s.get('figures', 0)}</span>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
+        for p in st.session_state.pdf_paths:
+            st.markdown(f"**{Path(p).name}**")
+            st.caption(p)
 
 left, right = st.columns([2.2, 1])
 
 with left:
     st.markdown(
         f"""
-<div class="hero">
+<div class="kb-hero">
   <h1>🧩 Khánh AI Notebook</h1>
-  <div>Upload nhanh → tách caption hình → hỏi hình nào sẽ hiện ảnh đó ngay trong chat.</div>
-  <div style="margin-top:10px; opacity:.85">Đang chạy: <b>{APP_VERSION}</b></div>
+  <div>Hỏi mục nào → in đúng thứ tự: văn bản → hình/code/box → văn bản.</div>
+  <div style="margin-top:10px; opacity:.9">Đang chạy: <b>{APP_VERSION}</b></div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    data = st.session_state.notebook
-
-    if not data:
-        st.info("Hãy upload tài liệu ở thanh bên trái rồi bấm **Tạo notebook**.")
+    if not st.session_state.pdf_paths:
+        st.info("Hãy upload PDF bên trái rồi bấm **Tạo notebook**.")
     else:
-        st.markdown(
-            f"""
-<div class="status">
-Notebook đã sẵn sàng · {len(data.sources)} nguồn · {len(data.chunks)} đoạn text · {len(data.figures)} hình/caption
-</div>
-""",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='kb-status'>Notebook đã sẵn sàng · {len(st.session_state.pdf_paths)} nguồn</div>", unsafe_allow_html=True)
 
         st.markdown("### Gợi ý hỏi nhanh theo file")
-        qs = build_quick_questions(data)
-        cols = st.columns(min(5, len(qs)))
-        for i, q in enumerate(qs):
-            with cols[i % len(cols)]:
-                if st.button(q, use_container_width=True, key=f"quick_{i}_{q}"):
-                    ans, sources = answer_question(q, data)
+        cols = st.columns(5)
+        for i, q in enumerate(quick_questions()):
+            with cols[i]:
+                if st.button(q, use_container_width=True, key=f"quick_{i}"):
+                    ans = answer_query(q)
                     st.session_state.messages.append(("user", q))
                     st.session_state.messages.append(("assistant", ans))
-                    st.session_state.last_sources = sources
+                    st.session_state.last_result = ans
                     st.rerun()
 
         for role, content in st.session_state.messages:
-            render_message(role, content)
+            if role == "user":
+                st.markdown('<div class="kb-chat-card kb-user">👤</div>', unsafe_allow_html=True)
+                st.markdown(content)
+            else:
+                st.markdown('<div class="kb-chat-card kb-bot">🤖</div>', unsafe_allow_html=True)
+                render_answer(content)
 
         with st.form("chat_form", clear_on_submit=True):
-            q = st.text_input("Hỏi về văn bản hoặc hình trong tài liệu...", placeholder="Ví dụ: hình 1, Mục lục, I. Giới thiệu, Embedding là gì?")
+            q = st.text_input(
+                "Hỏi về văn bản hoặc hình trong tài liệu...",
+                placeholder="Ví dụ: III.2. Chunking, III.3. Embedding và lưu vào Vector Database, hình 2",
+            )
             submitted = st.form_submit_button("Gửi")
             if submitted and q.strip():
-                with st.spinner("Đang trả lời theo nguồn..."):
-                    ans, sources = answer_question(q.strip(), data)
+                with st.spinner("Đang đọc đúng vùng PDF..."):
+                    ans = answer_query(q.strip())
                 st.session_state.messages.append(("user", q.strip()))
                 st.session_state.messages.append(("assistant", ans))
-                st.session_state.last_sources = sources
+                st.session_state.last_result = ans
                 st.rerun()
 
 with right:
     st.markdown("## 🧾 Nguồn & Debug")
-
-    data = st.session_state.notebook
-    if not data:
-        st.info("Chưa có dữ liệu.")
+    st.markdown(f"**Version:** `{APP_VERSION}`")
+    pdf = current_pdf_path()
+    if pdf:
+        st.markdown(f"**PDF:** {Path(pdf).name}")
     else:
-        st.markdown(f"**Version:** `{APP_VERSION}`")
-        st.metric("Nguồn", len(data.sources))
-        st.metric("Text chunks", len(data.chunks))
-        st.metric("Hình/caption", len(data.figures))
+        st.info("Chưa có dữ liệu.")
 
-        with st.expander("Xem hình đã tách", expanded=False):
-            if not data.figures:
-                st.caption("Chưa phát hiện hình/caption.")
-            for fig in data.figures:
-                st.markdown(f"**Hình {fig.figure_id} - Trang {fig.page}**")
-                st.caption(fig.caption)
-                try:
-                    st.image(fig.image_path, use_container_width=True)
-                except Exception:
-                    pass
-                if fig.visible_text:
-                    st.caption("Chữ trong hình: " + ", ".join(fig.visible_text))
-                if fig.vision_error:
-                    st.caption("Vision error: " + fig.vision_error[:200])
-
-        with st.expander("Xem nguồn dùng cho câu trả lời gần nhất", expanded=True):
-            if not st.session_state.last_sources:
-                st.caption("Chưa có nguồn.")
-            for src in st.session_state.last_sources:
-                st.markdown(f"**{src.get('title', 'Nguồn')}**")
-                if src.get("image_path"):
-                    try:
-                        st.image(src["image_path"], use_container_width=True)
-                    except Exception:
-                        pass
-                st.text_area(
-                    "Nội dung nguồn",
-                    src.get("content", ""),
-                    height=180,
-                    key=f"src_{hash(str(src))}",
-                )
-
-        with st.expander("Xem text nguồn", expanded=False):
-            st.text_area("Full text preview", data.full_text[:6000], height=320)
+    with st.expander("Kết quả gần nhất", expanded=False):
+        st.json(st.session_state.last_result if st.session_state.last_result else {})
