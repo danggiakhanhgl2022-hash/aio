@@ -237,7 +237,7 @@ with left:
         with st.form("chat_form", clear_on_submit=True):
             q = st.text_input(
                 "Hỏi về văn bản hoặc hình trong tài liệu...",
-                placeholder="Ví dụ: III.2. Chunking, III.3. Embedding và lưu vào Vector Database, hình 2",
+                placeholder="Ví dụ: Mục lục, 4. Giả mã, hình 1, IV.2. Tạo file ứng dụng",
             )
             submitted = st.form_submit_button("Gửi")
             if submitted and q.strip():

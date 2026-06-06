@@ -1,4 +1,4 @@
-# INSTALL_V50.ps1
+# INSTALL_V51.ps1
 $ErrorActionPreference = "Stop"
 
 Write-Host "Dang dung Python/Streamlit cu..." -ForegroundColor Yellow
@@ -16,7 +16,7 @@ Remove-Item -Recurse -Force "$Target\src" -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$Target\runtime" -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$Target\__pycache__" -ErrorAction SilentlyContinue
 
-Write-Host "Copy code V50..." -ForegroundColor Yellow
+Write-Host "Copy code V51..." -ForegroundColor Yellow
 Copy-Item "$Here\app.py" "$Target\app.py" -Force
 Copy-Item "$Here\src" "$Target\src" -Recurse -Force
 Copy-Item "$Here\requirements.txt" "$Target\requirements.txt" -Force
