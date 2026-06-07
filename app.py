@@ -48,6 +48,13 @@ section[data-testid="stSidebar"] { background: #f3f6fa; }
   color: #526071; font-size: .92rem; margin-top: -8px; margin-bottom: 16px;
   text-align: center;
 }
+/* Ẩn menu/toolbar mặc định của Streamlit để tránh bấm nhầm Clear caches khi copy */
+#MainMenu {visibility: hidden !important;}
+footer {visibility: hidden !important;}
+header [data-testid="stToolbar"] {display: none !important;}
+[data-testid="stToolbar"] {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important;}
+.stDeployButton {display: none !important;}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)

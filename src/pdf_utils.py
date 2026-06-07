@@ -32,9 +32,70 @@ def same_section_id(a: str, b: str) -> bool:
     return compact(a) == compact(b)
 
 
-def clean_text_display(text: str) -> str:
-    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    fixes = {
+
+
+def fix_vietnamese_spacing(text: str) -> str:
+    """
+    Sửa lỗi dính chữ do PDF extract không giữ khoảng trắng.
+
+    Ví dụ:
+    - vềmột -> về một
+    - chủđềphức tạp -> chủ đề phức tạp
+    - cụ thểmà -> cụ thể mà
+    - toàn bộtài liệu -> toàn bộ tài liệu
+    - khảnăng -> khả năng
+    - thểtrả -> thể trả
+    - luồng xửlý -> luồng xử lý
+    """
+    text = str(text or "")
+
+    phrase_fixes = {
+        "trang vềmột": "trang về một",
+        "trangvề": "trang về",
+        "vềmột": "về một",
+        "chủđềphức": "chủ đề phức",
+        "chủđề": "chủ đề",
+        "đềphức": "đề phức",
+        "cụ thểmà": "cụ thể mà",
+        "toàn bộtài liệu": "toàn bộ tài liệu",
+        "bộtài": "bộ tài",
+        "tàiliệu": "tài liệu",
+        "sẽgiải": "sẽ giải",
+        "khảnăng": "khả năng",
+        "thểtrả": "thể trả",
+        "vềtài": "về tài",
+        "luồng xửlý": "luồng xử lý",
+        "xửlý": "xử lý",
+
+        "kỹthuật": "kỹ thuật",
+        "kỹ thuậtgiúp": "kỹ thuật giúp",
+        "hạn chếnày": "hạn chế này",
+        "hạn chếlớn": "hạn chế lớn",
+        "đểLLM": "để LLM",
+        "trảlời": "trả lời",
+        "câuhỏi": "câu hỏi",
+        "câu hỏi liênquan": "câu hỏi liên quan",
+        "văn bản liênquan": "văn bản liên quan",
+        "liênquan": "liên quan",
+        "có thểtrả": "có thể trả",
+        "dựatrên": "dựa trên",
+        "bài viếtnày": "bài viết này",
+        "tài liệuPDF": "tài liệu PDF",
+        "cần hỏiđáp": "cần hỏi đáp",
+        "hỏiđáp": "hỏi đáp",
+        "trả lời dựatrên": "trả lời dựa trên",
+        "nhiệm vụcụthể": "nhiệm vụ cụ thể",
+        "cụthể": "cụ thể",
+        "phân tíchý": "phân tích ý",
+        "cửa sổngữcảnh": "cửa sổ ngữ cảnh",
+        "ngữcảnh": "ngữ cảnh",
+        "sẽxây": "sẽ xây",
+        "sẽđóng": "sẽ đóng",
+        "sẽdùng": "sẽ dùng",
+        "đểthuận": "để thuận",
+        "Ởđây": "Ở đây",
+        "không cầnbiết": "không cần biết",
+
         "bộfile": "bộ file",
         "có thểvượt": "có thể vượt",
         "độchính": "độ chính",
@@ -58,29 +119,141 @@ def clean_text_display(text: str) -> str:
         "tất cảchunks": "tất cả chunks",
         "thành một dãy số(gọi": "thành một dãy số (gọi",
         "nhỏvăn": "nhỏ văn",
-        "chính xác": "chính xác",
     }
-    for a, b in fixes.items():
-        text = text.replace(a, b)
+
+    for _ in range(3):
+        for a, b in phrase_fixes.items():
+            text = text.replace(a, b)
+
+    # Chèn khoảng trắng trước các từ viết hoa/kỹ thuật bị dính.
+    text = re.sub(
+        r"([a-zà-ỹ])(?=(LLMs|LLM|PDF|RAG|AI|HTML|JavaScript|Streamlit|ChromaDB|Ollama|ChatGPT|Gemini)\b)",
+        r"\1 ",
+        text,
+    )
+
+    # Nhóm từ tiếng Việt hay bị dính ở phía sau.
+    right_words = [
+        "về", "một", "chủ", "đề", "phức", "tạp", "mà", "bộ", "tài", "liệu",
+        "giải", "quyết", "khả", "năng", "thể", "trả", "xử", "lý",
+        "này", "lớn", "giúp", "hỏi", "đáp", "liên", "quan", "trên", "dưới",
+        "vào", "ra", "của", "cho", "với", "trong", "ngoài", "trước", "sau",
+        "thành", "nhiều", "ngắn", "cảnh", "cửa", "sổ", "ngữ", "hạn", "chế",
+        "chính", "xác", "thuận", "tiện", "biết", "nhiệm", "vụ", "cụ",
+        "phân", "tích", "nghĩa", "đồng", "thời", "đảm", "bảo", "đoạn", "nội",
+        "dung", "khi", "ghép", "lại", "không", "vượt", "quá", "giới"
+    ]
+
+    for w in sorted(set(right_words), key=len, reverse=True):
+        pattern = rf"([a-zà-ỹ])({re.escape(w)})(?=\b|[,.!?;:)\]\s])"
+        text = re.sub(pattern, rf"\1 \2", text, flags=re.I)
+
+    for _ in range(2):
+        for a, b in phrase_fixes.items():
+            text = text.replace(a, b)
+
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"([,.!?;:])(?=[^\s\d])", r"\1 ", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+
+    return text
+
+
+
+def clean_text_display(text: str) -> str:
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\x11", "").replace("¶", "").strip()
+    text = fix_vietnamese_spacing(text)
 
     lines = []
     for line in text.split("\n"):
         line = re.sub(r"[ \t]+", " ", line).strip()
         if line:
+            line = fix_vietnamese_spacing(line)
             lines.append(line)
+
     return "\n".join(lines).strip()
 
 
+
+def _line_text_from_spans(line: dict) -> str:
+    """
+    Ghép các span trong một dòng PDF theo tọa độ.
+
+    Lý do:
+    Nếu chỉ dùng span["text"] cộng lại, nhiều PDF sẽ bị dính chữ:
+    "vềmột", "chủđề", "đểLLM", "trảlời".
+
+    Cách này dùng khoảng cách x0/x1 giữa 2 span để tự thêm khoảng trắng.
+    """
+    spans = line.get("spans", []) or []
+    spans = [s for s in spans if str(s.get("text", ""))]
+
+    if not spans:
+        return ""
+
+    spans = sorted(spans, key=lambda s: (s.get("bbox", [0, 0, 0, 0])[1], s.get("bbox", [0, 0, 0, 0])[0]))
+
+    out = []
+    prev_x1 = None
+    prev_text = ""
+    prev_size = 10.0
+
+    for span in spans:
+        stext = str(span.get("text", ""))
+        if not stext:
+            continue
+
+        bbox = span.get("bbox", [0, 0, 0, 0])
+        x0 = float(bbox[0])
+        x1 = float(bbox[2])
+        size = float(span.get("size", prev_size or 10.0))
+        gap = 0 if prev_x1 is None else x0 - float(prev_x1)
+
+        if out:
+            need_space = False
+
+            if not prev_text.endswith((" ", "\t", "\n")) and not stext.startswith((" ", "\t", "\n")):
+                # Không tách trước dấu câu.
+                if stext[0] not in ".,;:!?)]}%”’":
+                    # Nếu có khoảng cách vật lý giữa span, xem là khoảng trắng.
+                    if gap > max(0.3, max(size, prev_size) * 0.02):
+                        need_space = True
+
+                    # Nếu span hiện tại bắt đầu bằng chữ hoa/ký hiệu kỹ thuật, thường là từ mới.
+                    if stext[0].isupper():
+                        need_space = True
+
+            if need_space:
+                out.append(" ")
+
+        out.append(stext)
+        prev_x1 = x1
+        prev_text = stext
+        prev_size = size
+
+    line_text = "".join(out)
+    line_text = re.sub(r"[ \t]+", " ", line_text)
+    return line_text.strip()
+
+
+
 def extract_block_text(block: dict) -> str:
+    """
+    Lấy text từ một PDF block.
+
+    V58:
+    Ghép text theo từng line và từng span bằng tọa độ x0/x1.
+    Nhờ vậy app giảm lỗi dính chữ trên nhiều file PDF khác nhau,
+    không chỉ sửa riêng một tài liệu.
+    """
     texts = []
+
     for line in block.get("lines", []):
-        line_text = ""
-        for span in line.get("spans", []):
-            line_text += span.get("text", "")
-        line_text = line_text.strip()
+        line_text = _line_text_from_spans(line)
         if line_text:
             texts.append(line_text)
+
     return "\n".join(texts).strip()
 
 
